@@ -2,10 +2,10 @@
 protocol: "0.1"
 id: T-004
 title: Implement bcos task submit with report guard
-status: TODO
-attempt: 0
+status: DONE
+attempt: 1
 created: 2026-08-04T05:01:29Z
-updated: 2026-08-04T05:01:29Z
+updated: 2026-08-04T10:32:57.781Z
 ---
 
 ## Objective
