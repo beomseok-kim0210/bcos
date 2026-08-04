@@ -2,10 +2,10 @@
 protocol: "0.1"
 id: T-003
 title: Implement bcos task start with atomic lifecycle update
-status: TODO
-attempt: 0
+status: DONE
+attempt: 1
 created: 2026-08-04T04:24:41Z
-updated: 2026-08-04T04:24:41Z
+updated: 2026-08-04T04:50:52.003Z
 ---
 
 ## Objective
