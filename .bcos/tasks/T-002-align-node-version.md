@@ -2,10 +2,10 @@
 protocol: "0.1"
 id: T-002
 title: Align minimum Node version with tested environment
-status: TODO
-attempt: 0
+status: DONE
+attempt: 1
 created: 2026-08-04T02:48:50Z
-updated: 2026-08-04T02:48:50Z
+updated: 2026-08-04T03:13:17.003Z
 ---
 
 ## Objective
