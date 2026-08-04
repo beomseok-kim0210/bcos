@@ -88,8 +88,11 @@ Implemented and verified:
 - `bcos task start <id> --actor-role <role> --actor-id <id>` — the `TODO → IN_PROGRESS`
   transition, which updates the task frontmatter, the event log, and the derived state
   index together
+- `bcos task submit <id> --actor-role <role> --actor-id <id>` — the
+  `IN_PROGRESS → IMPLEMENTED` transition, refused unless a report exists containing an
+  entry for the current attempt (RFC-001 G3)
 - Lifecycle guards checked **before any write**, so a rejected transition leaves every
-  file untouched — verified across five failure paths
+  file untouched — verified across six failure paths
 - State transitions tested against temporary fixtures, never the repository's own `.bcos/`
 - `--version`, `--help`, and a failing path for unknown arguments
 - Independent review and benchmark records for every completed task
@@ -98,7 +101,7 @@ Implemented and verified:
 
 Not implemented. Do not expect these to work yet.
 
-- `bcos task submit`, `bcos task approve`
+- `bcos task approve`
 - `bcos task show` and context package generation
 - `bcos task create`, `bcos task list`
 - `bcos init`, `bcos status`, `bcos reindex`
@@ -106,47 +109,51 @@ Not implemented. Do not expect these to work yet.
 - Role-based worker task templates
 - Worktree-isolated parallel workers
 
-`submit` and `approve` are still performed by hand, so a lifecycle can still be left
-incomplete after the first transition.
+**`approve` is still performed by hand.** Two of the seven protocol transitions are
+automated. Separation of duties — the rule that a submitter cannot approve their own
+work — is therefore still a documented promise rather than an enforced guard.
 
 ## Verified Baselines
 
-Three tasks have completed the full protocol cycle. These are **baselines, not improvements.**
+Five tasks have completed the full protocol cycle. These are **baselines, not improvements.**
 
-| | T-001 (scaffold) | T-002 (maintenance) | T-003 (lifecycle) |
-|---|---:|---:|---:|
-| Acceptance Criteria | 9/9 | 11/11 | 15/15 |
-| Tests | 3/3 | 3/3 | 11/11 |
-| Scope violations | 0 | 0 | 0 |
-| Ponytail violations | 0 | 0 | 0 |
-| Runtime dependencies | 0 | 0 | 0 |
-| Product change lines | 87 | 2 | 304 |
-| Attempt | 1 | 1 | 1 |
-| Rework | 0 | 0 | 0 |
+| | T-001 | T-002 | T-003 | T-005 | T-004 |
+|---|---:|---:|---:|---:|---:|
+| Acceptance Criteria | 9/9 | 11/11 | 15/15 | 18/18 | 16/16 |
+| Tests | 3/3 | 3/3 | 11/11 | 23/23 | 31/31 |
+| Scope violations | 0 | 0 | 0 | 0 | 0 |
+| Ponytail violations | 0 | 0 | 0 | 0 | 0 |
+| Runtime dependencies | 0 | 0 | 0 | 0 | 0 |
+| Attempt | 1 | 1 | 1 | 1 | 1 |
+| Rework | 0 | 0 | 0 | 0 | 0 |
 
-T-003 additionally measured the transition it automates:
+Each lifecycle task also measured the transition it automates:
 
-| | Before | After |
+| | `TODO → IN_PROGRESS` (T-003) | `IN_PROGRESS → IMPLEMENTED` (T-004) |
 |---|---:|---:|
-| Files a human edits for one `TODO → IN_PROGRESS` transition | 3 | 0 |
-| Manual steps for that transition | 6 | 1 |
-| Partial writes observed across 5 failure paths | — | 0 |
+| Files a human edits | 3 → 0 | 3 → 0 |
+| Manual steps | 6 → 1 | 5 → 1 |
+| Partial writes across failure paths | 0 / 5 | 0 / 6 |
+
+Lifecycle coverage after T-004: **2 of 7 transitions.**
 
 **How to read this:**
 
-- The three tasks differ in kind — creating a project, editing two lines, and adding a
-  state-changing command. Comparing them directly is not meaningful.
-- **There is no control group.** No improvement rate is claimed, in any dimension.
-- The step counts above are **observed absolute numbers** for one specific transition.
+- The tasks differ in kind — creating a project, editing two lines, adding a
+  state-changing command, fixing a validator. Comparing them directly is not meaningful.
+- The step counts are **observed absolute numbers** for one specific transition each.
   They are not converted into a productivity percentage.
-- Read Scope Ratio has fallen across the three tasks, but the repository also grew.
+- **There is no control group.** No improvement rate is claimed, in any dimension.
+- Read Scope Ratio has fallen across the tasks, but the repository also grew.
   That decline is **not** claimed as an efficiency gain.
 - `Files Read` is **self-reported by the worker** and has no audit trail. It is recorded
   in the benchmarks but is not treated as verified.
 
 Full records: [T-001](docs/benchmarks/T-001-project-scaffold.md) ·
 [T-002](docs/benchmarks/T-002-align-node-version.md) ·
-[T-003](docs/benchmarks/T-003-task-start-command.md)
+[T-003](docs/benchmarks/T-003-task-start-command.md) ·
+[T-004](docs/benchmarks/T-004-task-submit-command.md) ·
+[T-005](docs/benchmarks/T-005-fix-required-section-validation.md)
 
 ## Quick Start
 
