@@ -2,10 +2,10 @@
 protocol: "0.1"
 id: T-005
 title: Fix required section validation for standard Markdown spacing
-status: TODO
-attempt: 0
+status: DONE
+attempt: 1
 created: 2026-08-04T07:12:24Z
-updated: 2026-08-04T07:12:24Z
+updated: 2026-08-04T07:41:34.003Z
 ---
 
 ## Objective
