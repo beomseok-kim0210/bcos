@@ -1,0 +1,3 @@
+{"ts":"2026-08-04T02:36:29.001Z","event":"TASK_STARTED","task":"T-001","attempt":1,"actor_role":"worker","actor_id":"codex-cli","from":"TODO","to":"IN_PROGRESS"}
+{"ts":"2026-08-04T02:36:29.002Z","event":"TASK_SUBMITTED","task":"T-001","attempt":1,"actor_role":"worker","actor_id":"codex-cli","from":"IN_PROGRESS","to":"IMPLEMENTED"}
+{"ts":"2026-08-04T02:36:29.003Z","event":"TASK_APPROVED","task":"T-001","attempt":1,"actor_role":"reviewer","actor_id":"claude-code","from":"IMPLEMENTED","to":"DONE"}

@@ -2,10 +2,10 @@
 protocol: "0.1"
 id: T-001
 title: BCOS CLI 프로젝트 스캐폴드 구축
-status: TODO
-attempt: 0
+status: DONE
+attempt: 1
 created: 2026-08-03T00:00:00Z
-updated: 2026-08-03T00:00:00Z
+updated: 2026-08-04T02:36:29.003Z
 ---
 
 ## Objective
