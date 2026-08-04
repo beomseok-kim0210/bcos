@@ -85,48 +85,68 @@ Implemented and verified:
 - Git-tracked Task / Report / Review artifacts with separate owners
 - Append-only event log and a regenerable state index
 - Separation of duties enforced by `actor_id` — the submitter cannot approve
-- CLI scaffold: `--version`, `--help`, and a failing path for unknown arguments
+- `bcos task start <id> --actor-role <role> --actor-id <id>` — the `TODO → IN_PROGRESS`
+  transition, which updates the task frontmatter, the event log, and the derived state
+  index together
+- Lifecycle guards checked **before any write**, so a rejected transition leaves every
+  file untouched — verified across five failure paths
+- State transitions tested against temporary fixtures, never the repository's own `.bcos/`
+- `--version`, `--help`, and a failing path for unknown arguments
 - Independent review and benchmark records for every completed task
 
 ### Planned
 
 Not implemented. Do not expect these to work yet.
 
+- `bcos task submit`, `bcos task approve`
+- `bcos task show` and context package generation
+- `bcos task create`, `bcos task list`
 - `bcos init`, `bcos status`, `bcos reindex`
-- `bcos task create` / `list` / `show`
-- `bcos task start` / `submit` / `approve`
-- Context package generation
+- Worker execution adapter
 - Role-based worker task templates
 - Worktree-isolated parallel workers
-- Vendor-neutral worker adapters
 
-Until the CLI lands, protocol transitions are performed by hand.
+`submit` and `approve` are still performed by hand, so a lifecycle can still be left
+incomplete after the first transition.
 
 ## Verified Baselines
 
-Two tasks have completed the full protocol cycle. These are **baselines, not improvements.**
+Three tasks have completed the full protocol cycle. These are **baselines, not improvements.**
 
-| | T-001 (scaffold) | T-002 (maintenance) |
+| | T-001 (scaffold) | T-002 (maintenance) | T-003 (lifecycle) |
+|---|---:|---:|---:|
+| Acceptance Criteria | 9/9 | 11/11 | 15/15 |
+| Tests | 3/3 | 3/3 | 11/11 |
+| Scope violations | 0 | 0 | 0 |
+| Ponytail violations | 0 | 0 | 0 |
+| Runtime dependencies | 0 | 0 | 0 |
+| Product change lines | 87 | 2 | 304 |
+| Attempt | 1 | 1 | 1 |
+| Rework | 0 | 0 | 0 |
+
+T-003 additionally measured the transition it automates:
+
+| | Before | After |
 |---|---:|---:|
-| Acceptance Criteria | 9/9 | 11/11 |
-| Tests | 3/3 | 3/3 |
-| Scope violations | 0 | 0 |
-| Ponytail violations | 0 | 0 |
-| Runtime dependencies | 0 | 0 |
-| Product change lines | 87 | 2 |
-| Attempt | 1 | 1 |
-| Rework | 0 | 0 |
+| Files a human edits for one `TODO → IN_PROGRESS` transition | 3 | 0 |
+| Manual steps for that transition | 6 | 1 |
+| Partial writes observed across 5 failure paths | — | 0 |
 
 **How to read this:**
 
-- The two tasks differ in kind — one creates a project, the other edits two lines.
-  Comparing them directly is not meaningful.
+- The three tasks differ in kind — creating a project, editing two lines, and adding a
+  state-changing command. Comparing them directly is not meaningful.
 - **There is no control group.** No improvement rate is claimed, in any dimension.
+- The step counts above are **observed absolute numbers** for one specific transition.
+  They are not converted into a productivity percentage.
+- Read Scope Ratio has fallen across the three tasks, but the repository also grew.
+  That decline is **not** claimed as an efficiency gain.
 - `Files Read` is **self-reported by the worker** and has no audit trail. It is recorded
   in the benchmarks but is not treated as verified.
 
 Full records: [T-001](docs/benchmarks/T-001-project-scaffold.md) ·
-[T-002](docs/benchmarks/T-002-align-node-version.md)
+[T-002](docs/benchmarks/T-002-align-node-version.md) ·
+[T-003](docs/benchmarks/T-003-task-start-command.md)
 
 ## Quick Start
 
@@ -148,7 +168,11 @@ node dist/cli.js --version
 node dist/cli.js --help
 ```
 
-The `bcos` commands listed under Planned do not exist yet.
+`task start` operates on the `.bcos/` directory of the **current working directory**.
+It works in this repository because `.bcos/tasks/`, `.bcos/events.jsonl`, and
+`.bcos/state.json` already exist. There is no `bcos init` yet, so a fresh project has to
+create that structure by hand before the command can run. The commands listed under
+Planned do not exist at all.
 
 ## Repository Structure
 

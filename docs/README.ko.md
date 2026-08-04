@@ -1,119 +1,111 @@
-# BCOS — 한국어 안내
+# BCOS
 
-**AI 코딩 에이전트를 위한 Task 중심 · Git 기반 운영 계층.**
+BCOS는 Claude Code와 Codex 같은 AI 코딩 도구가 Task, Report, Review, Git 기록을 기준으로
+협업하도록 만드는 Git 기반 개발 운영 도구다.
 
-> **상태: Experimental.** Task 프로토콜 `0.1`과 CLI 프로토타입 단계다.
-> `0.x`는 호환성을 약속하지 않는다.
+지금은 실험 단계다. 프로토콜 버전은 `0.1`이고 호환성을 약속하지 않는다.
 
 영문 문서가 공식 진입점이다 — [README.md](../README.md)
 
 ---
 
-## 무엇인가
+## BCOS를 만든 이유
 
-여러 AI 개발 에이전트가 **동일한 프로젝트 상태와 기억을 공유**하도록 만드는 운영 계층이다.
+AI에게 코드를 짜게 하는 것과, AI가 참여하는 프로젝트의 상태를 관리하는 것은 다른 문제다.
+전자는 이미 잘 된다. 후자가 잘 안 된다.
 
-프로젝트의 상태·결정·작업 큐·리뷰는 대화 세션이 아니라 **Git 저장소가 소유한다.**
+이 프로젝트도 그 문제를 직접 겪었다.
 
-> AI가 프로젝트를 기억하는 것이 아니라, 프로젝트가 AI를 기억한다.
+첫 두 개의 작업(T-001, T-002)에서 구현은 성공했고 리뷰도 통과했다. 그런데 두 번 모두
+**상태 전이 기록이 누락됐다.** Task 파일은 `TODO`인 채로 남았고, 이벤트 로그는 비어 있었고,
+상태 인덱스는 낡은 값이었다. 나중에 손으로 되돌려야 했다.
 
-## 왜 만들었는가
+원인을 따져보니 Worker의 성능 문제가 아니었다. 전이 하나를 기록하려면 사람이 파일 세 개를
+각각 열어 고쳐야 했고, 두 번 다 그중 일부를 잊었을 뿐이다. **절차를 강제하는 도구가 없었다.**
 
-AI 코딩 에이전트는 코드는 잘 쓰지만 프로젝트를 기억하지 못한다. 반복해서 부딪힌 문제가 다섯이다.
+BCOS는 이 반복된 결함에서 출발했다. 그래서 목표가 "AI를 더 똑똑하게"가 아니라
+"프로젝트 상태를 저장소가 소유하게"다.
 
-- **세션이 끝나면 맥락이 사라진다.** 창을 닫으면 매번 처음부터 다시 설명한다.
-- **에이전트 간 공유 진실 원천이 없다.** 한쪽이 아는 것을 다른 쪽이 모른다.
-- **자기검증 편향.** 구현한 주체가 스스로 "완료"를 선언한다.
-- **컨텍스트 비용.** 작업 하나마다 저장소 전체를 다시 읽는다.
-- **진행 상태가 암묵적이다.** 무엇이 끝났는지가 대화 스크롤에만 있어 감사·복구·인수인계가 불가능하다.
-
-## Claude Code와 Codex CLI의 역할
-
-역할은 에이전트가 아니라 **Task가 가진다.**
+## 어떻게 동작하나
 
 ```
-Human
-  └─▶ Claude Code — Manager / Architect / Reviewer
-        └─▶ Task Contract        (범위, 읽기 목록, 완료 기준)
-              └─▶ Codex CLI — Worker
-                    └─▶ Implementation Report
-                          └─▶ 독립 Review        (다른 actor_id)
-                                └─▶ Human 승인
-                                      └─▶ Git 이력
+사람이 목표 결정
+→ Claude Code가 Task 설계
+→ Codex가 구현하고 Report 작성
+→ Claude Code가 독립 Review
+→ BCOS가 상태와 이벤트 관리
+→ 사람이 최종 승인
 ```
 
-- **Claude Code** — 아키텍처, Task 명세, 리뷰, 메모리. 구현 코드는 쓰지 않는다.
-- **Codex CLI** — 구현과 테스트, Report 작성. `IMPLEMENTED`까지가 한계다.
-- **승인은 제출자가 할 수 없다.** `actor_id`가 다른 주체만 `DONE`으로 올릴 수 있다.
+여기서 중요한 규칙이 하나 있다. **제출한 주체는 승인할 수 없다.** 승인을 수행하는
+`actor_id`는 해당 시도를 제출한 `actor_id`와 달라야 한다. 구현한 쪽이 스스로 완료를
+선언할 수 있으면 리뷰 단계가 형식만 남기 때문이다.
 
-Worker 세션은 하나의 역할, 하나의 Task만 맡는다. 같은 실행기가 다음 세션에서는 다른 역할이 된다 —
-무엇을 하는 세션인지는 전달받은 Task가 정한다. 장기 기억은 저장소에 있으므로 세션은 소모품이다.
+다만 아직 자동화되지 않은 구간이 있다. Task를 Codex에 전달하고, Report를 다시 Claude에게
+넘기는 과정은 현재 사람이 직접 한다. 상태 전이도 `task start` 한 건만 명령으로 처리되고
+나머지는 수동이다.
 
-## ClawDev와의 차이
+## ClawDev와 무엇이 다른가
 
-ClawDev는 역할별로 별도 API Agent를 두었던 이전 실험이다. 동작은 했지만 **역할을 늘리는 비용이
-Agent 인스턴스 하나와 API 비용**이었다. BCOS는 역할 분리는 유지하고 그 결합만 끊었다.
+BCOS 이전에 ClawDev라는 실험을 했다. 역할별로 Agent 인스턴스를 따로 두는 방식이었고,
+동작은 했다. 다만 역할을 하나 늘릴 때마다 Agent와 시스템 프롬프트, 그리고 API 비용이
+같이 늘었다.
+
+BCOS는 역할 분리라는 아이디어는 그대로 가져오고, 역할이 Agent에 묶여 있던 부분만 끊었다.
 
 | | ClawDev | BCOS |
 |---|---|---|
-| 구조 | Agent 중심 | **Task 중심** |
-| 역할의 소재 | Agent 인스턴스 | **Task Contract** |
-| 역할 추가 비용 | 새 Agent + 프롬프트 + API 비용 | **문서 한 장** |
-| 상태 보관 | Agent 대화 이력 | **Git 아티팩트** |
-| 방향 | Agent → Task | **Task → Worker** |
+| 역할이 있는 곳 | Agent 인스턴스 | Task Contract |
+| 역할을 추가하는 비용 | Agent + 프롬프트 + API 비용 | 문서 한 장 |
+| 상태가 있는 곳 | Agent의 대화 이력 | Git 아티팩트 |
+| 방향 | Agent가 Task를 받는다 | Task가 Worker를 정의한다 |
 
-ClawDev의 역할 분리 경험은 폐기하지 않고 Worker Task Template으로 흡수한다.
-근거: [ADR-003](decisions/ADR-003-task-centric-workers.md)
+같은 Codex 실행기라도 어떤 Task를 받았느냐에 따라 백엔드 Worker가 되기도 하고 테스트
+Worker가 되기도 한다. 세션에는 기억을 남기지 않으므로 언제 종료해도 잃는 것이 없다.
 
-## 현재 구현 상태
+근거는 [ADR-003](decisions/ADR-003-task-centric-workers.md)에 정리해 두었다.
 
-**구현됨**
+## 현재 구현된 기능
 
-- Task 프로토콜 `0.1` — 상태·전이·가드·아티팩트 스키마
-- Git 추적 Task / Report / Review, 소유자 분리
-- Append-only 이벤트 로그와 재생성 가능한 state 인덱스
-- `actor_id` 기반 직무 분리 — 제출자는 승인할 수 없다
-- CLI 스캐폴드 — `--version`, `--help`, 알 수 없는 인자 실패 경로
+- `--version`, `--help`, 알 수 없는 인자에 대한 오류 처리
+- `bcos task start <id> --actor-role <role> --actor-id <id>`
+- 이 명령 하나가 Task frontmatter, 이벤트 로그, 상태 인덱스를 함께 갱신한다
+- 쓰기를 시작하기 전에 lifecycle guard 다섯 개를 먼저 검사한다
+- 거부된 전이는 파일을 하나도 바꾸지 않는다 — 실패 경로 5종에서 확인했다
+- 상태 전이 테스트는 임시 디렉터리에서만 실행되며 저장소의 실제 `.bcos/`를 건드리지 않는다
+- 모든 작업에 대해 Report, Review, Benchmark 기록을 남긴다
 
-**미구현 (아직 동작하지 않음)**
+## 아직 구현하지 않은 기능
 
-`bcos init` · `status` · `reindex` · `task create/list/show` · `task start/submit/approve` ·
-Context Package 생성 · Worker Task Template · Worktree 병렬 실행 · 벤더 중립 어댑터
+`submit`과 `approve` 전이는 아직 명령이 없어서 사람이 직접 처리한다. Task를 만들거나
+목록을 보는 명령, Worker에게 넘길 Context Package를 생성하는 `task show`,
+새 프로젝트에 `.bcos/` 구조를 만드는 `init`, 상태를 조회하는 `status`와 인덱스를 다시
+만드는 `reindex`도 아직 없다. Codex나 Claude를 자동으로 실행하는 연결도 없다.
 
-**CLI가 나오기 전까지 프로토콜 전이는 사람이 손으로 수행한다.**
+구현 시점은 약속하지 않는다. 필요가 확인된 순서대로 만든다.
 
-## 검증된 수치
+## T-001부터 T-003까지
 
-Task 두 건이 전체 프로토콜 사이클을 통과했다. **기준선이지 개선 실적이 아니다.**
+지금까지 세 개의 작업이 프로토콜 전 과정을 통과했다.
 
-| | T-001 (스캐폴드) | T-002 (유지보수) |
-|---|---:|---:|
-| Acceptance Criteria | 9/9 | 11/11 |
-| 테스트 | 3/3 | 3/3 |
-| 범위 이탈 | 0 | 0 |
-| Ponytail 위반 | 0 | 0 |
-| 런타임 의존성 | 0 | 0 |
-| 제품 변경 줄 수 | 87 | 2 |
-| 재작업 | 0 | 0 |
+| | 한 일 | AC | 테스트 |
+|---|---|---:|---:|
+| **T-001** | CLI 골격 구성 | 9/9 | 3/3 |
+| **T-002** | Node 지원 버전 선언을 실제 검증 범위에 맞춤 | 11/11 | 3/3 |
+| **T-003** | `task start` 자동화 | 15/15 | 11/11 |
 
-**읽는 방법**
+T-003에서는 자동화한 전이 자체를 측정했다. `TODO → IN_PROGRESS` 전이 한 건을 완료하는 데
+사람이 편집해야 하는 파일이 **3개에서 0개로**, 수동 단계가 **6단계에서 1단계로** 바뀌었다.
+실패 경로 5종에서 **부분 쓰기는 한 건도 관측되지 않았다.**
 
-- 두 Task는 성격이 다르다. 하나는 프로젝트 생성, 하나는 2줄 수정이다. 직접 비교는 무의미하다.
-- **비교군이 없다.** 어떤 차원에서도 개선율을 주장하지 않는다.
-- `읽은 파일 수`는 **Worker 자기보고**이며 감사 로그가 없다. 기록은 하되 검증된 값으로 보지 않는다.
+세 작업 모두 재작업 없이 한 번에 승인됐고, 범위 이탈과 과설계 위반은 0건이었다.
 
-상세: [T-001](benchmarks/T-001-project-scaffold.md) · [T-002](benchmarks/T-002-align-node-version.md)
+다만 이 수치들을 생산성 향상률로 환산하지는 않는다. 세 작업은 성격이 전부 다르고
+비교군이 없다. 위 단계 수는 특정 전이 하나에 대해 관찰된 절대값일 뿐이다.
 
-## 로드맵
+## 직접 실행해 보기
 
-핵심 CLI 명령 → 자동 lifecycle 전이 → Context Package 생성 →
-역할별 Worker Task Template → Worktree 격리 병렬 Worker → 벤더 중립 어댑터
-
-각 단계의 착수 조건: [docs/vision.md](vision.md)
-
-## Quick Start
-
-**Node.js 24 이상** 필요. 런타임 의존성 0.
+Node.js 24 이상이 필요하다. 런타임 의존성은 없다.
 
 ```bash
 npm install
@@ -127,16 +119,57 @@ npm test
 ```bash
 node dist/cli.js --version
 ```
+```bash
+node dist/cli.js --help
+```
 
-미구현 목록의 `bcos` 명령은 아직 존재하지 않는다.
+`task start`는 현재 작업 디렉터리의 `.bcos/`를 대상으로 동작한다. 이 저장소에는
+`.bcos/tasks/`, `.bcos/events.jsonl`, `.bcos/state.json`이 이미 있어서 바로 실행되지만,
+아직 `init` 명령이 없으므로 **새 프로젝트에서는 이 구조를 직접 만들어야 한다.**
 
-## 더 읽을 것
+## 프로젝트 구조
+
+```
+.bcos/tasks/          Task 명세. 단일 진실 원천
+.bcos/reports/        Worker가 쓰는 구현 보고서
+.bcos/reviews/        Reviewer가 쓰는 검토 기록
+.bcos/events.jsonl    상태 변경 이력. 추가만 가능
+.bcos/state.json      Task 파일에서 다시 만들 수 있는 파생 인덱스
+docs/rfcs/            프로토콜 명세
+docs/decisions/       설계 결정 기록
+docs/benchmarks/      작업별 측정값
+src/                  CLI 구현
+```
+
+## 관련 문서
 
 | 문서 | 내용 |
 |---|---|
-| [RFC-001 Core](rfcs/RFC-001-task-protocol.md) | **규범.** Task·Report·Review·Event 규격 |
-| [RFC-001 Appendix](rfcs/RFC-001-task-protocol-appendix.md) | 비규범 — 설계 근거, 엣지 케이스 |
-| [Vision](vision.md) | 문제 정의, 원칙, 로드맵 |
-| [Architecture](architecture.md) | 저장소 배치, 실행 환경 제약 |
-| [ADR-001](decisions/ADR-001-language.md) · [ADR-002](decisions/ADR-002-storage.md) · [ADR-003](decisions/ADR-003-task-centric-workers.md) | 언어 · 저장 구조 · Worker 모델 결정 |
+| [RFC-001 Core](rfcs/RFC-001-task-protocol.md) | 프로토콜 규범. Task·Report·Review·Event 규격 |
+| [RFC-001 Appendix](rfcs/RFC-001-task-protocol-appendix.md) | 설계 근거와 엣지 케이스. 규범 아님 |
+| [Vision](vision.md) | 문제 정의와 원칙, 단계별 계획 |
+| [Architecture](architecture.md) | 저장소 배치와 실행 환경 제약 |
+| [ADR-001](decisions/ADR-001-language.md) | Node.js를 고르고 런타임 의존성을 두지 않은 이유 |
+| [ADR-002](decisions/ADR-002-storage.md) | SQLite 대신 텍스트 파일을 쓰는 이유 |
+| [ADR-003](decisions/ADR-003-task-centric-workers.md) | 역할을 Task에 두는 이유 |
 | [Git Convention](git-convention.md) | 커밋 규약 |
+
+## 앞으로의 방향
+
+당장은 lifecycle을 끝까지 명령으로 덮는 것이 목표다. `submit`과 `approve`가 붙으면
+전이를 사람이 손으로 기록할 일이 없어진다.
+
+그다음은 Worker에게 넘길 Context Package를 생성하는 일이다. 지금은 Task 파일과 프롬프트를
+사람이 복사해서 전달하는데, 이 부분이 자동화되어야 "필요한 만큼만 읽는다"는 원칙을
+실제로 측정할 수 있다.
+
+새 프로젝트 초기화와 실행기 연결은 그 뒤다.
+
+## 기여하기
+
+[CONTRIBUTING.md](../CONTRIBUTING.md)를 참고한다. 아직 실험 단계라 프로토콜이 예고 없이
+바뀔 수 있다.
+
+## 라이선스
+
+[MIT License](../LICENSE)
