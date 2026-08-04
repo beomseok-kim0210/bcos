@@ -34,10 +34,15 @@ function hasRequiredSections(content: string): boolean {
   ];
   let previousIndex = -1;
 
-  for (const name of names) {
-    const match = new RegExp(`^## ${name}[ \\t]*\\r?\\n([\\s\\S]*?)(?=^## |\\s*$)`, "m").exec(content);
+  for (const [index, name] of names.entries()) {
+    const match = new RegExp(`^## ${name}[ \\t]*(?:\\r?\\n|$)`, "m").exec(content);
     if (!match || match.index <= previousIndex) return false;
-    const value = match[1].trim();
+    const bodyStart = match.index + match[0].length;
+    const nextHeading = index < names.length - 1
+      ? /^## /m.exec(content.slice(bodyStart))
+      : undefined;
+    const bodyEnd = nextHeading ? bodyStart + nextHeading.index : content.length;
+    const value = content.slice(bodyStart, bodyEnd).trim();
     if (!value || /^(?:TBD|TODO|<[^>]*>)$/i.test(value)) return false;
     previousIndex = match.index;
   }

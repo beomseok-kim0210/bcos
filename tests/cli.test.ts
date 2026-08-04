@@ -107,6 +107,22 @@ function withFixture(callback, tasks) {
   }
 }
 
+function assertStartSucceeds(body) {
+  withFixture((directory) => {
+    const result = runStart(directory);
+    assert.equal(result.status, 0, result.stderr);
+  }, [{ id: "T-001", status: "TODO", body }]);
+}
+
+function assertStartFailsWithoutChanges(body) {
+  withFixture((directory) => {
+    const before = threeFiles(directory);
+    const result = runStart(directory);
+    assert.equal(result.status, 1);
+    assert.deepEqual(threeFiles(directory), before);
+  }, [{ id: "T-001", status: "TODO", body }]);
+}
+
 test("--version prints the package version", () => {
   const result = run("--version");
   assert.equal(result.status, 0);
@@ -192,3 +208,103 @@ test("a missing actor id changes no files", () => withFixture((directory) => {
   assert.equal(result.status, 1);
   assert.deepEqual(threeFiles(directory), before);
 }));
+
+test("task start accepts one blank line after headings", () => {
+  assertStartSucceeds(requiredBody.replaceAll("\nBuild it.", "\n\nBuild it."));
+});
+
+test("task start accepts multiple blank lines after headings", () => {
+  assertStartSucceeds(requiredBody.replaceAll("\nBuild it.", "\n\n\nBuild it."));
+});
+
+test("task start accepts multiple paragraphs", () => {
+  assertStartSucceeds(requiredBody.replace("Build it.", "First paragraph.\n\nSecond paragraph."));
+});
+
+test("task start accepts a section that starts with a list", () => {
+  assertStartSucceeds(requiredBody.replace("Build it.", "- First item\n- Second item"));
+});
+
+test("task start accepts a table in a section", () => {
+  assertStartSucceeds(requiredBody.replace(
+    "Build it.",
+    "| Input | Output |\n|---|---|\n| valid | accepted |",
+  ));
+});
+
+test("task start accepts a code block in a section", () => {
+  assertStartSucceeds(requiredBody.replace("Build it.", "```text\nexample\n```"));
+});
+
+test("task start accepts a T-004-style Task fixture", () => {
+  const t004StyleBody = `
+## Objective
+
+Add the next transition to the CLI.
+
+The transition must preserve the Task body.
+
+\`\`\`text
+bcos task submit T-100 --actor-role worker --actor-id codex-cli
+\`\`\`
+
+## Scope
+
+- Parse the command arguments.
+- Validate every guard before writing.
+
+### Guards
+
+Subheadings remain part of the section body.
+
+## Out of Scope
+
+- Approval commands
+- A general CLI framework
+
+## Acceptance Criteria
+
+| Case | Expected |
+|---|---|
+| valid | exit 0 |
+| invalid | exit 1 |
+
+## Expected Files
+
+- src/cli.ts
+- tests/cli.test.ts
+
+## Test Requirements
+
+Run the built-in Node test runner.
+`;
+  assertStartSucceeds(t004StyleBody);
+});
+
+test("a whitespace-only section before an extra H2 changes no files", () => {
+  assertStartFailsWithoutChanges(requiredBody.replace(
+    "Build it.",
+    "   \n\n## Notes\nContent in another section does not fill Objective.",
+  ));
+});
+
+test("a TODO-only section changes no files", () => {
+  assertStartFailsWithoutChanges(requiredBody.replace("Build it.", "TODO"));
+});
+
+test("a TBD-only or placeholder-only section changes no files", () => {
+  for (const placeholder of ["TBD", "<placeholder>"]) {
+    assertStartFailsWithoutChanges(requiredBody.replace("Build it.", placeholder));
+  }
+});
+
+test("a missing required heading changes no files", () => {
+  assertStartFailsWithoutChanges(requiredBody.replace("## Scope\nStart it.\n\n", ""));
+});
+
+test("required headings out of order change no files", () => {
+  assertStartFailsWithoutChanges(requiredBody.replace(
+    "## Objective\nBuild it.\n\n## Scope\nStart it.",
+    "## Scope\nStart it.\n\n## Objective\nBuild it.",
+  ));
+});
