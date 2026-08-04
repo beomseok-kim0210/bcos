@@ -40,13 +40,13 @@ Everything else.
 Run tests.
 `;
 
-function taskContent(id, status = "TODO", body = requiredBody) {
+function taskContent(id, status = "TODO", body = requiredBody, attempt = 0) {
   return `---
 protocol: "0.1"
 id: ${id}
 title: Test Task
 status: ${status}
-attempt: 0
+attempt: ${attempt}
 created: 2026-08-04T00:00:00Z
 updated: 2026-08-04T00:00:00Z
 ---
@@ -57,13 +57,22 @@ function fixture(tasks = [{ id: "T-001", status: "TODO", body: requiredBody }]) 
   const directory = mkdtempSync(path.join(os.tmpdir(), "bcos-cli-"));
   const bcosDirectory = path.join(directory, ".bcos");
   const tasksDirectory = path.join(bcosDirectory, "tasks");
+  const reportsDirectory = path.join(bcosDirectory, "reports");
   mkdirSync(tasksDirectory, { recursive: true });
+  mkdirSync(reportsDirectory, { recursive: true });
   for (const task of tasks) {
     writeFileSync(
       path.join(tasksDirectory, `${task.id}-test-task.md`),
-      taskContent(task.id, task.status, task.body),
+      taskContent(task.id, task.status, task.body, task.attempt),
       "utf8",
     );
+    if (task.report !== undefined) {
+      writeFileSync(
+        path.join(reportsDirectory, `${task.id}-test-task.md`),
+        task.report,
+        "utf8",
+      );
+    }
   }
   writeFileSync(path.join(bcosDirectory, "events.jsonl"), "", "utf8");
   writeFileSync(
@@ -86,6 +95,14 @@ function runStart(directory, ...extraArguments) {
   return spawnSync(
     process.execPath,
     [cli, "task", "start", "T-001", "--actor-role", "worker", "--actor-id", "codex-cli", ...extraArguments],
+    { cwd: directory, encoding: "utf8" },
+  );
+}
+
+function runSubmit(directory, ...arguments_) {
+  return spawnSync(
+    process.execPath,
+    [cli, "task", "submit", "T-001", "--actor-role", "worker", "--actor-id", "codex-cli", ...arguments_],
     { cwd: directory, encoding: "utf8" },
   );
 }
@@ -308,3 +325,81 @@ test("required headings out of order change no files", () => {
     "## Scope\nStart it.\n\n## Objective\nBuild it.",
   ));
 });
+
+const attemptOneReport = `---
+task: T-001
+---
+
+## Attempt 1 — 2026-08-04T00:00:00Z
+
+### Implemented
+Test implementation.
+`;
+
+const submitTaskFixture = [{
+  id: "T-001", status: "IN_PROGRESS", body: requiredBody, attempt: 1, report: attemptOneReport,
+}];
+
+test("task submit updates frontmatter without changing attempt or body", () => withFixture((directory) => {
+  const before = threeFiles(directory)[0];
+  const result = runSubmit(directory);
+  const after = threeFiles(directory)[0];
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(after, /^status: IMPLEMENTED$/m);
+  assert.match(after, /^attempt: 1$/m);
+  assert.equal(after.slice(after.indexOf("---", 3) + 3), before.slice(before.indexOf("---", 3) + 3));
+}, submitTaskFixture));
+
+test("task submit appends an eight-field event", () => withFixture((directory) => {
+  assert.equal(runSubmit(directory).status, 0);
+  const event = JSON.parse(threeFiles(directory)[1].trim());
+  assert.deepEqual(Object.keys(event), ["ts", "event", "task", "attempt", "actor_role", "actor_id", "from", "to"]);
+  assert.deepEqual({ ...event, ts: "ignored" }, {
+    ts: "ignored", event: "TASK_SUBMITTED", task: "T-001", attempt: 1,
+    actor_role: "worker", actor_id: "codex-cli", from: "IN_PROGRESS", to: "IMPLEMENTED",
+  });
+  assert.equal(frontmatterValueForTest(threeFiles(directory)[0], "updated"), event.ts);
+}, submitTaskFixture));
+
+test("task submit recalculates state and clears current task", () => withFixture((directory) => {
+  assert.equal(runSubmit(directory).status, 0);
+  const state = JSON.parse(threeFiles(directory)[2]);
+  assert.deepEqual(state.counts, { TODO: 0, IN_PROGRESS: 0, IMPLEMENTED: 1, DONE: 0, BLOCKED: 0 });
+  assert.equal(state.current_task, null);
+}, submitTaskFixture));
+
+test("task submit with a missing Task changes no files", () => withFixture((directory) => {
+  const before = threeFiles(directory);
+  const result = spawnSync(process.execPath, [cli, "task", "submit", "T-999", "--actor-role", "worker", "--actor-id", "codex-cli"], { cwd: directory, encoding: "utf8" });
+  assert.equal(result.status, 1);
+  assert.deepEqual(threeFiles(directory), before);
+}, submitTaskFixture));
+
+test("task submit with a non-IN_PROGRESS Task changes no files", () => withFixture((directory) => {
+  const before = threeFiles(directory);
+  assert.equal(runSubmit(directory).status, 1);
+  assert.deepEqual(threeFiles(directory), before);
+}, [{ id: "T-001", status: "TODO", body: requiredBody, attempt: 1, report: attemptOneReport }]));
+
+test("task submit without a Report changes no files", () => withFixture((directory) => {
+  const before = threeFiles(directory);
+  assert.equal(runSubmit(directory).status, 1);
+  assert.deepEqual(threeFiles(directory), before);
+}, [{ id: "T-001", status: "IN_PROGRESS", body: requiredBody, attempt: 1 }]));
+
+test("task submit without the current attempt heading changes no files", () => withFixture((directory) => {
+  const before = threeFiles(directory);
+  assert.equal(runSubmit(directory).status, 1);
+  assert.deepEqual(threeFiles(directory), before);
+}, [{ id: "T-001", status: "IN_PROGRESS", body: requiredBody, attempt: 2, report: attemptOneReport }]));
+
+test("task submit without an actor id changes no files", () => withFixture((directory) => {
+  const before = threeFiles(directory);
+  const result = spawnSync(
+    process.execPath,
+    [cli, "task", "submit", "T-001", "--actor-role", "worker"],
+    { cwd: directory, encoding: "utf8" },
+  );
+  assert.equal(result.status, 1);
+  assert.deepEqual(threeFiles(directory), before);
+}, submitTaskFixture));

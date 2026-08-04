@@ -57,16 +57,18 @@ function replaceFrontmatterValue(content: string, key: string, value: string): s
   );
 }
 
-function startTask(): void {
+function actorArguments(): { actorRole: string; actorId: string } {
   const args = process.argv.slice(2);
-  const taskId = args[2];
   const roleIndex = args.indexOf("--actor-role");
   const idIndex = args.indexOf("--actor-id");
   const actorRole = roleIndex >= 0 ? args[roleIndex + 1] : undefined;
   const actorId = idIndex >= 0 ? args[idIndex + 1] : undefined;
 
   if (!actorRole || !actorId) fail("Both --actor-role and --actor-id are required");
+  return { actorRole, actorId };
+}
 
+function readTaskSet(taskId: string) {
   const bcosDirectory = path.join(process.cwd(), ".bcos");
   const tasksDirectory = path.join(bcosDirectory, "tasks");
   let taskNames: string[];
@@ -86,6 +88,58 @@ function startTask(): void {
   const target = taskRecords.find(({ filePath }) => path.basename(filePath) === matchingNames[0]);
   if (!target) fail(`Task not found: ${taskId}`);
 
+  return { bcosDirectory, tasksDirectory, matchingName: matchingNames[0], taskRecords, target };
+}
+
+function persistTransition(
+  taskSet: ReturnType<typeof readTaskSet>,
+  taskId: string,
+  targetStatus: string,
+  updatedTask: string,
+  event: Record<string, unknown>,
+  timestamp: string,
+): void {
+  const { bcosDirectory, tasksDirectory, matchingName, taskRecords, target } = taskSet;
+  const eventsPath = path.join(bcosDirectory, "events.jsonl");
+  const statePath = path.join(bcosDirectory, "state.json");
+  const existingEvents = readFileSync(eventsPath, "utf8");
+  const existingState = JSON.parse(readFileSync(statePath, "utf8")) as Record<string, unknown>;
+  const statuses = ["TODO", "IN_PROGRESS", "IMPLEMENTED", "DONE", "BLOCKED"];
+  const counts = Object.fromEntries(statuses.map((taskStatus) => [taskStatus, 0]));
+  let currentTask: string | null = null;
+  for (const record of taskRecords) {
+    const recordStatus = record === target ? targetStatus : frontmatterValue(record.content, "status");
+    if (recordStatus && recordStatus in counts) counts[recordStatus] += 1;
+    if (recordStatus === "IN_PROGRESS") {
+      currentTask = record === target ? taskId : frontmatterValue(record.content, "id") ?? null;
+    }
+  }
+  const updatedState = {
+    protocol: existingState.protocol,
+    version: existingState.version,
+    project: existingState.project,
+    branch: existingState.branch,
+    counts,
+    current_task: currentTask,
+    updated: timestamp,
+  };
+
+  const taskTempPath = path.join(tasksDirectory, `.${matchingName}.${process.pid}.tmp`);
+  writeFileSync(taskTempPath, updatedTask, "utf8");
+  renameSync(taskTempPath, target.filePath);
+  const separator = existingEvents.length > 0 && !existingEvents.endsWith("\n") ? "\n" : "";
+  appendFileSync(eventsPath, `${separator}${JSON.stringify(event)}\n`, "utf8");
+  const stateTempPath = path.join(bcosDirectory, `.state.json.${process.pid}.tmp`);
+  writeFileSync(stateTempPath, `${JSON.stringify(updatedState, null, 2)}\n`, "utf8");
+  renameSync(stateTempPath, statePath);
+}
+
+function startTask(): void {
+  const taskId = process.argv[4];
+  const { actorRole, actorId } = actorArguments();
+  const taskSet = readTaskSet(taskId);
+  const { taskRecords, target } = taskSet;
+
   const status = frontmatterValue(target.content, "status");
   if (status !== "TODO") fail(`Task ${taskId} is not TODO`);
   if (taskRecords.some(({ content }) => frontmatterValue(content, "status") === "IN_PROGRESS")) {
@@ -96,10 +150,6 @@ function startTask(): void {
   const currentAttempt = Number(frontmatterValue(target.content, "attempt"));
   if (!Number.isInteger(currentAttempt) || currentAttempt < 0) fail(`Task ${taskId} has an invalid attempt`);
 
-  const eventsPath = path.join(bcosDirectory, "events.jsonl");
-  const statePath = path.join(bcosDirectory, "state.json");
-  const existingEvents = readFileSync(eventsPath, "utf8");
-  const existingState = JSON.parse(readFileSync(statePath, "utf8")) as Record<string, unknown>;
   const attempt = currentAttempt + 1;
   const timestamp = new Date().toISOString();
   const updatedTask = replaceFrontmatterValue(
@@ -121,38 +171,63 @@ function startTask(): void {
     from: "TODO",
     to: "IN_PROGRESS",
   };
-  const statuses = ["TODO", "IN_PROGRESS", "IMPLEMENTED", "DONE", "BLOCKED"];
-  const counts = Object.fromEntries(statuses.map((taskStatus) => [taskStatus, 0]));
-  for (const record of taskRecords) {
-    const recordStatus = record === target ? "IN_PROGRESS" : frontmatterValue(record.content, "status");
-    if (recordStatus && recordStatus in counts) counts[recordStatus] += 1;
+
+  persistTransition(taskSet, taskId, "IN_PROGRESS", updatedTask, event, timestamp);
+}
+
+function submitTask(): void {
+  const taskId = process.argv[4];
+  const { actorRole, actorId } = actorArguments();
+  const taskSet = readTaskSet(taskId);
+  const { bcosDirectory, target } = taskSet;
+  if (frontmatterValue(target.content, "status") !== "IN_PROGRESS") {
+    fail(`Task ${taskId} is not IN_PROGRESS`);
   }
-  const updatedState = {
-    protocol: existingState.protocol,
-    version: existingState.version,
-    project: existingState.project,
-    branch: existingState.branch,
-    counts,
-    current_task: taskId,
-    updated: timestamp,
+
+  const attempt = Number(frontmatterValue(target.content, "attempt"));
+  if (!Number.isInteger(attempt) || attempt < 1) fail(`Task ${taskId} has an invalid attempt`);
+  const reportsDirectory = path.join(bcosDirectory, "reports");
+  let reportNames: string[];
+  try {
+    reportNames = readdirSync(reportsDirectory)
+      .filter((name) => name.startsWith(`${taskId}-`) && name.endsWith(".md"));
+  } catch {
+    fail(`Report for Task ${taskId} is missing attempt ${attempt}`);
+  }
+  const attemptHeading = new RegExp(`^## Attempt ${attempt}(?:[ \\t]|$)`, "m");
+  const hasReport = reportNames.some((name) =>
+    attemptHeading.test(readFileSync(path.join(reportsDirectory, name), "utf8"))
+  );
+  if (!hasReport) fail(`Report for Task ${taskId} is missing attempt ${attempt}`);
+
+  const timestamp = new Date().toISOString();
+  const updatedTask = replaceFrontmatterValue(
+    replaceFrontmatterValue(target.content, "status", "IMPLEMENTED"),
+    "updated",
+    timestamp,
+  );
+  const event = {
+    ts: timestamp,
+    event: "TASK_SUBMITTED",
+    task: taskId,
+    attempt,
+    actor_role: actorRole,
+    actor_id: actorId,
+    from: "IN_PROGRESS",
+    to: "IMPLEMENTED",
   };
 
-  const taskTempPath = path.join(tasksDirectory, `.${matchingNames[0]}.${process.pid}.tmp`);
-  writeFileSync(taskTempPath, updatedTask, "utf8");
-  renameSync(taskTempPath, target.filePath);
-  const separator = existingEvents.length > 0 && !existingEvents.endsWith("\n") ? "\n" : "";
-  appendFileSync(eventsPath, `${separator}${JSON.stringify(event)}\n`, "utf8");
-  const stateTempPath = path.join(bcosDirectory, `.state.json.${process.pid}.tmp`);
-  writeFileSync(stateTempPath, `${JSON.stringify(updatedState, null, 2)}\n`, "utf8");
-  renameSync(stateTempPath, statePath);
+  persistTransition(taskSet, taskId, "IMPLEMENTED", updatedTask, event, timestamp);
 }
 
 if (argument === "task" && process.argv[3] === "start") {
   startTask();
+} else if (argument === "task" && process.argv[3] === "submit") {
+  submitTask();
 } else if (argument === "--version") {
   console.log(packageJson.version);
 } else if (argument === "--help") {
-  console.log("Usage: bcos [--version | --help | task start <id> --actor-role <role> --actor-id <id>]");
+  console.log("Usage: bcos [--version | --help | task <start|submit> <id> --actor-role <role> --actor-id <id>]");
 } else {
   console.error(`Unknown argument: ${argument ?? "(none)"}`);
   process.exitCode = 1;
