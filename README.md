@@ -91,8 +91,14 @@ Implemented and verified:
 - `bcos task submit <id> --actor-role <role> --actor-id <id>` — the
   `IN_PROGRESS → IMPLEMENTED` transition, refused unless a report exists containing an
   entry for the current attempt (RFC-001 G3)
+- `bcos task approve <id> --actor-role <role> --actor-id <id>` — the
+  `IMPLEMENTED → DONE` transition, refused unless the review carries an `APPROVED`
+  verdict for the current attempt (G4)
+- **Separation of duties is enforced, not just documented.** The approving `actor_id`
+  must differ from the one recorded in that attempt's `TASK_SUBMITTED` event (G5).
+  A submitter attempting to approve their own work is rejected and no file changes
 - Lifecycle guards checked **before any write**, so a rejected transition leaves every
-  file untouched — verified across six failure paths
+  file untouched — verified across eleven failure paths
 - State transitions tested against temporary fixtures, never the repository's own `.bcos/`
 - `--version`, `--help`, and a failing path for unknown arguments
 - Independent review and benchmark records for every completed task
@@ -101,7 +107,7 @@ Implemented and verified:
 
 Not implemented. Do not expect these to work yet.
 
-- `bcos task approve`
+- `bcos task request-changes`, `bcos task block`, `bcos task unblock`
 - `bcos task show` and context package generation
 - `bcos task create`, `bcos task list`
 - `bcos init`, `bcos status`, `bcos reindex`
@@ -109,33 +115,37 @@ Not implemented. Do not expect these to work yet.
 - Role-based worker task templates
 - Worktree-isolated parallel workers
 
-**`approve` is still performed by hand.** Two of the seven protocol transitions are
-automated. Separation of duties — the rule that a submitter cannot approve their own
-work — is therefore still a documented promise rather than an enforced guard.
+**Three of the seven protocol transitions are automated** — `start`, `submit`, and
+`approve`, which is the full core cycle. Rework still requires recording
+`request-changes` by hand. `actor_id` is self-declared, so separation of duties assumes
+a trusted environment; authentication is a known limit of protocol `0.1`.
 
 ## Verified Baselines
 
-Five tasks have completed the full protocol cycle. These are **baselines, not improvements.**
+Six tasks have completed the full protocol cycle. These are **baselines, not improvements.**
 
-| | T-001 | T-002 | T-003 | T-005 | T-004 |
-|---|---:|---:|---:|---:|---:|
-| Acceptance Criteria | 9/9 | 11/11 | 15/15 | 18/18 | 16/16 |
-| Tests | 3/3 | 3/3 | 11/11 | 23/23 | 31/31 |
-| Scope violations | 0 | 0 | 0 | 0 | 0 |
-| Ponytail violations | 0 | 0 | 0 | 0 | 0 |
-| Runtime dependencies | 0 | 0 | 0 | 0 | 0 |
-| Attempt | 1 | 1 | 1 | 1 | 1 |
-| Rework | 0 | 0 | 0 | 0 | 0 |
+| | T-001 | T-002 | T-003 | T-005 | T-004 | T-006 |
+|---|---:|---:|---:|---:|---:|---:|
+| Acceptance Criteria | 9/9 | 11/11 | 15/15 | 18/18 | 16/16 | 24/24 |
+| Tests | 3/3 | 3/3 | 11/11 | 23/23 | 31/31 | 46/46 |
+| Scope violations | 0 | 0 | 0 | 0 | 0 | 0 |
+| Ponytail violations | 0 | 0 | 0 | 0 | 0 | 0 |
+| Runtime dependencies | 0 | 0 | 0 | 0 | 0 | 0 |
+| Attempt | 1 | 1 | 1 | 1 | 1 | 1 |
+| Rework | 0 | 0 | 0 | 0 | 0 | 0 |
 
 Each lifecycle task also measured the transition it automates:
 
-| | `TODO → IN_PROGRESS` (T-003) | `IN_PROGRESS → IMPLEMENTED` (T-004) |
-|---|---:|---:|
-| Files a human edits | 3 → 0 | 3 → 0 |
-| Manual steps | 6 → 1 | 5 → 1 |
-| Partial writes across failure paths | 0 / 5 | 0 / 6 |
+| | `TODO → IN_PROGRESS` | `IN_PROGRESS → IMPLEMENTED` | `IMPLEMENTED → DONE` |
+|---|---:|---:|---:|
+| Files a human edits | 3 → 0 | 3 → 0 | 3 → 0 |
+| Manual steps | 6 → 1 | 5 → 1 | 5 → 1 |
+| Partial writes across failure paths | 0 / 5 | 0 / 6 | 0 / 11 |
 
-Lifecycle coverage after T-004: **2 of 7 transitions.**
+Lifecycle coverage after T-006: **3 of 7 transitions** — the full core cycle.
+Adding each transition cost 136, 75, and 69 lines of `src/cli.ts` respectively.
+Those are absolute figures; later transitions reuse the infrastructure the first one
+built, so the decline is structural and **not** presented as an efficiency gain.
 
 **How to read this:**
 
@@ -153,7 +163,8 @@ Full records: [T-001](docs/benchmarks/T-001-project-scaffold.md) ·
 [T-002](docs/benchmarks/T-002-align-node-version.md) ·
 [T-003](docs/benchmarks/T-003-task-start-command.md) ·
 [T-004](docs/benchmarks/T-004-task-submit-command.md) ·
-[T-005](docs/benchmarks/T-005-fix-required-section-validation.md)
+[T-005](docs/benchmarks/T-005-fix-required-section-validation.md) ·
+[T-006](docs/benchmarks/T-006-task-approve-command.md)
 
 ## Quick Start
 
