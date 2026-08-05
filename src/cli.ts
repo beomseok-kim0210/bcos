@@ -220,14 +220,83 @@ function submitTask(): void {
   persistTransition(taskSet, taskId, "IMPLEMENTED", updatedTask, event, timestamp);
 }
 
+function submittedActor(bcosDirectory: string, taskId: string, attempt: number): string | undefined {
+  const eventsPath = path.join(bcosDirectory, "events.jsonl");
+  const events = readFileSync(eventsPath, "utf8")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  const submitted = events.find((event) =>
+    event.task === taskId && event.event === "TASK_SUBMITTED" && event.attempt === attempt
+  );
+  return typeof submitted?.actor_id === "string" ? submitted.actor_id : undefined;
+}
+
+function approveTask(): void {
+  const taskId = process.argv[4];
+  const { actorRole, actorId } = actorArguments();
+  const taskSet = readTaskSet(taskId);
+  const { bcosDirectory, target } = taskSet;
+  if (frontmatterValue(target.content, "status") !== "IMPLEMENTED") {
+    fail(`Task ${taskId} is not IMPLEMENTED`);
+  }
+  if (actorRole !== "reviewer" && actorRole !== "human") {
+    fail("Only reviewer or human may approve a Task");
+  }
+
+  const attempt = Number(frontmatterValue(target.content, "attempt"));
+  if (!Number.isInteger(attempt) || attempt < 1) fail(`Task ${taskId} has an invalid attempt`);
+  const reviewsDirectory = path.join(bcosDirectory, "reviews");
+  let reviewNames: string[];
+  try {
+    reviewNames = readdirSync(reviewsDirectory)
+      .filter((name) => name.startsWith(`${taskId}-`) && name.endsWith(".md"));
+  } catch {
+    fail(`Approved Review for Task ${taskId} attempt ${attempt} is missing`);
+  }
+  const approvedHeading = new RegExp(
+    `^## Attempt ${attempt} — .+ — APPROVED[ \\t]*\\r?$`,
+    "m",
+  );
+  const hasApproval = reviewNames.some((name) =>
+    approvedHeading.test(readFileSync(path.join(reviewsDirectory, name), "utf8"))
+  );
+  if (!hasApproval) fail(`Approved Review for Task ${taskId} attempt ${attempt} is missing`);
+
+  const submitterId = submittedActor(bcosDirectory, taskId, attempt);
+  if (!submitterId) fail(`Submit event for Task ${taskId} attempt ${attempt} is missing`);
+  if (submitterId === actorId) fail("The submitting actor cannot approve the same attempt");
+
+  const timestamp = new Date().toISOString();
+  const updatedTask = replaceFrontmatterValue(
+    replaceFrontmatterValue(target.content, "status", "DONE"),
+    "updated",
+    timestamp,
+  );
+  const event = {
+    ts: timestamp,
+    event: "TASK_APPROVED",
+    task: taskId,
+    attempt,
+    actor_role: actorRole,
+    actor_id: actorId,
+    from: "IMPLEMENTED",
+    to: "DONE",
+  };
+
+  persistTransition(taskSet, taskId, "DONE", updatedTask, event, timestamp);
+}
+
 if (argument === "task" && process.argv[3] === "start") {
   startTask();
 } else if (argument === "task" && process.argv[3] === "submit") {
   submitTask();
+} else if (argument === "task" && process.argv[3] === "approve") {
+  approveTask();
 } else if (argument === "--version") {
   console.log(packageJson.version);
 } else if (argument === "--help") {
-  console.log("Usage: bcos [--version | --help | task <start|submit> <id> --actor-role <role> --actor-id <id>]");
+  console.log("Usage: bcos [--version | --help | task <start|submit|approve> <id> --actor-role <role> --actor-id <id>]");
 } else {
   console.error(`Unknown argument: ${argument ?? "(none)"}`);
   process.exitCode = 1;

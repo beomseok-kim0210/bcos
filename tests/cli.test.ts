@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -53,13 +54,15 @@ updated: 2026-08-04T00:00:00Z
 ${body}`;
 }
 
-function fixture(tasks = [{ id: "T-001", status: "TODO", body: requiredBody }]) {
+function fixture(tasks = [{ id: "T-001", status: "TODO", body: requiredBody }], events = "") {
   const directory = mkdtempSync(path.join(os.tmpdir(), "bcos-cli-"));
   const bcosDirectory = path.join(directory, ".bcos");
   const tasksDirectory = path.join(bcosDirectory, "tasks");
   const reportsDirectory = path.join(bcosDirectory, "reports");
+  const reviewsDirectory = path.join(bcosDirectory, "reviews");
   mkdirSync(tasksDirectory, { recursive: true });
   mkdirSync(reportsDirectory, { recursive: true });
+  mkdirSync(reviewsDirectory, { recursive: true });
   for (const task of tasks) {
     writeFileSync(
       path.join(tasksDirectory, `${task.id}-test-task.md`),
@@ -73,8 +76,15 @@ function fixture(tasks = [{ id: "T-001", status: "TODO", body: requiredBody }]) 
         "utf8",
       );
     }
+    if (task.review !== undefined) {
+      writeFileSync(
+        path.join(reviewsDirectory, `${task.id}-test-task.md`),
+        task.review,
+        "utf8",
+      );
+    }
   }
-  writeFileSync(path.join(bcosDirectory, "events.jsonl"), "", "utf8");
+  writeFileSync(path.join(bcosDirectory, "events.jsonl"), events, "utf8");
   writeFileSync(
     path.join(bcosDirectory, "state.json"),
     `${JSON.stringify({
@@ -107,6 +117,14 @@ function runSubmit(directory, ...arguments_) {
   );
 }
 
+function runApprove(directory, actorId = "reviewer-a", actorRole = "reviewer", taskId = "T-001") {
+  return spawnSync(
+    process.execPath,
+    [cli, "task", "approve", taskId, "--actor-role", actorRole, "--actor-id", actorId],
+    { cwd: directory, encoding: "utf8" },
+  );
+}
+
 function threeFiles(directory) {
   return [
     readFileSync(path.join(directory, ".bcos", "tasks", "T-001-test-task.md"), "utf8"),
@@ -115,8 +133,22 @@ function threeFiles(directory) {
   ];
 }
 
-function withFixture(callback, tasks) {
-  const directory = fixture(tasks);
+function bcosSnapshot(directory) {
+  const rootDirectory = path.join(directory, ".bcos");
+  const snapshot = {};
+  function visit(currentDirectory) {
+    for (const name of readdirSync(currentDirectory, { withFileTypes: true })) {
+      const filePath = path.join(currentDirectory, name.name);
+      if (name.isDirectory()) visit(filePath);
+      else snapshot[path.relative(rootDirectory, filePath)] = readFileSync(filePath, "utf8");
+    }
+  }
+  visit(rootDirectory);
+  return snapshot;
+}
+
+function withFixture(callback, tasks, events) {
+  const directory = fixture(tasks, events);
   try {
     callback(directory);
   } finally {
@@ -403,3 +435,151 @@ test("task submit without an actor id changes no files", () => withFixture((dire
   assert.equal(result.status, 1);
   assert.deepEqual(threeFiles(directory), before);
 }, submitTaskFixture));
+
+function reviewContent(attempt, verdict = "APPROVED") {
+  return `---
+task: T-001
+---
+
+## Attempt ${attempt} — 2026-08-04T00:00:00Z — ${verdict}
+
+### Verdict
+${verdict}
+`;
+}
+
+function submittedEvent(attempt, actorId) {
+  return `${JSON.stringify({
+    ts: "2026-08-04T00:00:00.000Z",
+    event: "TASK_SUBMITTED",
+    task: "T-001",
+    attempt,
+    actor_role: "worker",
+    actor_id: actorId,
+    from: "IN_PROGRESS",
+    to: "IMPLEMENTED",
+  })}\n`;
+}
+
+const approveTaskFixture = [{
+  id: "T-001", status: "IMPLEMENTED", body: requiredBody, attempt: 1, review: reviewContent(1),
+}];
+const attemptOneSubmitted = submittedEvent(1, "worker-a");
+
+test("task approve updates frontmatter without changing attempt or body", () => withFixture((directory) => {
+  const before = threeFiles(directory)[0];
+  const result = runApprove(directory);
+  const after = threeFiles(directory)[0];
+  const events = threeFiles(directory)[1].trim().split(/\r?\n/).map(JSON.parse);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(after, /^status: DONE$/m);
+  assert.match(after, /^attempt: 1$/m);
+  assert.equal(after.slice(after.indexOf("---", 3) + 3), before.slice(before.indexOf("---", 3) + 3));
+  assert.equal(frontmatterValueForTest(after, "updated"), events.at(-1).ts);
+}, approveTaskFixture, attemptOneSubmitted));
+
+test("task approve appends one eight-field event", () => withFixture((directory) => {
+  const beforeLines = threeFiles(directory)[1].trim().split(/\r?\n/).length;
+  assert.equal(runApprove(directory).status, 0);
+  const lines = threeFiles(directory)[1].trim().split(/\r?\n/);
+  const event = JSON.parse(lines.at(-1));
+  assert.equal(lines.length, beforeLines + 1);
+  assert.deepEqual(Object.keys(event), ["ts", "event", "task", "attempt", "actor_role", "actor_id", "from", "to"]);
+  assert.deepEqual({ ...event, ts: "ignored" }, {
+    ts: "ignored", event: "TASK_APPROVED", task: "T-001", attempt: 1,
+    actor_role: "reviewer", actor_id: "reviewer-a", from: "IMPLEMENTED", to: "DONE",
+  });
+}, approveTaskFixture, attemptOneSubmitted));
+
+test("task approve recalculates state and clears current task", () => withFixture((directory) => {
+  assert.equal(runApprove(directory).status, 0);
+  const state = JSON.parse(threeFiles(directory)[2]);
+  assert.deepEqual(state.counts, { TODO: 0, IN_PROGRESS: 0, IMPLEMENTED: 0, DONE: 1, BLOCKED: 0 });
+  assert.equal(state.current_task, null);
+}, approveTaskFixture, attemptOneSubmitted));
+
+test("task approve with a missing Task changes no files", () => withFixture((directory) => {
+  const before = bcosSnapshot(directory);
+  const result = runApprove(directory, "reviewer-a", "reviewer", "T-999");
+  assert.equal(result.status, 1);
+  assert.deepEqual(bcosSnapshot(directory), before);
+}, approveTaskFixture, attemptOneSubmitted));
+
+test("task approve with a non-IMPLEMENTED Task changes no files", () => withFixture((directory) => {
+  const before = bcosSnapshot(directory);
+  assert.equal(runApprove(directory).status, 1);
+  assert.deepEqual(bcosSnapshot(directory), before);
+}, [{ id: "T-001", status: "IN_PROGRESS", body: requiredBody, attempt: 1, review: reviewContent(1) }], attemptOneSubmitted));
+
+test("task approve without a Review changes no files", () => withFixture((directory) => {
+  const before = bcosSnapshot(directory);
+  assert.equal(runApprove(directory).status, 1);
+  assert.deepEqual(bcosSnapshot(directory), before);
+}, [{ id: "T-001", status: "IMPLEMENTED", body: requiredBody, attempt: 1 }], attemptOneSubmitted));
+
+test("task approve without the current attempt Review changes no files", () => withFixture((directory) => {
+  const before = bcosSnapshot(directory);
+  assert.equal(runApprove(directory).status, 1);
+  assert.deepEqual(bcosSnapshot(directory), before);
+}, [{ id: "T-001", status: "IMPLEMENTED", body: requiredBody, attempt: 2, review: reviewContent(1) }], submittedEvent(2, "worker-a")));
+
+test("task approve rejects a CHANGES_REQUESTED Review without changes", () => withFixture((directory) => {
+  const before = bcosSnapshot(directory);
+  assert.equal(runApprove(directory).status, 1);
+  assert.deepEqual(bcosSnapshot(directory), before);
+}, [{ id: "T-001", status: "IMPLEMENTED", body: requiredBody, attempt: 1, review: reviewContent(1, "CHANGES_REQUESTED") }], attemptOneSubmitted));
+
+test("task approve rejects BLOCKED and other verdicts without changes", () => {
+  for (const verdict of ["BLOCKED", "REJECTED"]) {
+    withFixture((directory) => {
+      const before = bcosSnapshot(directory);
+      assert.equal(runApprove(directory).status, 1);
+      assert.deepEqual(bcosSnapshot(directory), before);
+    }, [{ id: "T-001", status: "IMPLEMENTED", body: requiredBody, attempt: 1, review: reviewContent(1, verdict) }], attemptOneSubmitted);
+  }
+});
+
+test("task approve rejects the current attempt submitter without changes", () => withFixture((directory) => {
+  const before = bcosSnapshot(directory);
+  assert.equal(runApprove(directory, "worker-a").status, 1);
+  assert.deepEqual(bcosSnapshot(directory), before);
+}, approveTaskFixture, attemptOneSubmitted));
+
+test("task approve without a current submit event changes no files", () => withFixture((directory) => {
+  const before = bcosSnapshot(directory);
+  assert.equal(runApprove(directory).status, 1);
+  assert.deepEqual(bcosSnapshot(directory), before);
+}, approveTaskFixture));
+
+const attemptTwoFixture = [{
+  id: "T-001", status: "IMPLEMENTED", body: requiredBody, attempt: 2, review: reviewContent(2),
+}];
+const twoAttemptEvents = submittedEvent(1, "worker-a") + submittedEvent(2, "worker-b");
+
+test("task approve uses the current attempt and permits the previous submitter", () => withFixture((directory) => {
+  const result = runApprove(directory, "worker-a");
+  assert.equal(result.status, 0, result.stderr);
+}, attemptTwoFixture, twoAttemptEvents));
+
+test("task approve uses the current attempt and rejects the current submitter", () => withFixture((directory) => {
+  const before = bcosSnapshot(directory);
+  assert.equal(runApprove(directory, "worker-b").status, 1);
+  assert.deepEqual(bcosSnapshot(directory), before);
+}, attemptTwoFixture, twoAttemptEvents));
+
+test("task approve without an actor id changes no files", () => withFixture((directory) => {
+  const before = bcosSnapshot(directory);
+  const result = spawnSync(
+    process.execPath,
+    [cli, "task", "approve", "T-001", "--actor-role", "reviewer"],
+    { cwd: directory, encoding: "utf8" },
+  );
+  assert.equal(result.status, 1);
+  assert.deepEqual(bcosSnapshot(directory), before);
+}, approveTaskFixture, attemptOneSubmitted));
+
+test("task approve rejects the worker role without changes", () => withFixture((directory) => {
+  const before = bcosSnapshot(directory);
+  assert.equal(runApprove(directory, "reviewer-a", "worker").status, 1);
+  assert.deepEqual(bcosSnapshot(directory), before);
+}, approveTaskFixture, attemptOneSubmitted));
