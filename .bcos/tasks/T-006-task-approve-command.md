@@ -2,10 +2,10 @@
 protocol: "0.1"
 id: T-006
 title: Implement bcos task approve with review and separation-of-duties guards
-status: TODO
-attempt: 0
+status: DONE
+attempt: 1
 created: 2026-08-04T11:19:51Z
-updated: 2026-08-04T11:19:51Z
+updated: 2026-08-05T03:17:54.345Z
 ---
 
 ## Objective
