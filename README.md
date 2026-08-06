@@ -97,8 +97,13 @@ Implemented and verified:
 - **Separation of duties is enforced, not just documented.** The approving `actor_id`
   must differ from the one recorded in that attempt's `TASK_SUBMITTED` event (G5).
   A submitter attempting to approve their own work is rejected and no file changes
+- `bcos task context <id>` — assembles the files named in a task's read list into one
+  package on stdout. The same input produces the same bytes: no timestamp is written,
+  duplicates are removed, and the declared order is preserved. Paths outside the
+  repository, binaries, oversized files, and credential-shaped names are refused
 - Lifecycle guards checked **before any write**, so a rejected transition leaves every
-  file untouched — verified across eleven failure paths
+  file untouched — verified across eleven failure paths. `task context` writes nothing
+  at all, and a rejected package emits zero bytes to stdout
 - State transitions tested against temporary fixtures, never the repository's own `.bcos/`
 - `--version`, `--help`, and a failing path for unknown arguments
 - Independent review and benchmark records for every completed task
@@ -107,11 +112,11 @@ Implemented and verified:
 
 Not implemented. Do not expect these to work yet.
 
+- Worker execution — the package still has to be handed to the worker by a person
+- Prompt assembly and model adapters
 - `bcos task request-changes`, `bcos task block`, `bcos task unblock`
-- `bcos task show` and context package generation
 - `bcos task create`, `bcos task list`
 - `bcos init`, `bcos status`, `bcos reindex`
-- Worker execution adapter
 - Role-based worker task templates
 - Worktree-isolated parallel workers
 
@@ -122,17 +127,28 @@ a trusted environment; authentication is a known limit of protocol `0.1`.
 
 ## Verified Baselines
 
-Six tasks have completed the full protocol cycle. These are **baselines, not improvements.**
+Seven tasks have completed the full protocol cycle. These are **baselines, not improvements.**
 
-| | T-001 | T-002 | T-003 | T-005 | T-004 | T-006 |
-|---|---:|---:|---:|---:|---:|---:|
-| Acceptance Criteria | 9/9 | 11/11 | 15/15 | 18/18 | 16/16 | 24/24 |
-| Tests | 3/3 | 3/3 | 11/11 | 23/23 | 31/31 | 46/46 |
-| Scope violations | 0 | 0 | 0 | 0 | 0 | 0 |
-| Ponytail violations | 0 | 0 | 0 | 0 | 0 | 0 |
-| Runtime dependencies | 0 | 0 | 0 | 0 | 0 | 0 |
-| Attempt | 1 | 1 | 1 | 1 | 1 | 1 |
-| Rework | 0 | 0 | 0 | 0 | 0 | 0 |
+| | T-001 | T-002 | T-003 | T-005 | T-004 | T-006 | T-007 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Acceptance Criteria | 9/9 | 11/11 | 15/15 | 18/18 | 16/16 | 24/24 | 32/32 |
+| Tests | 3/3 | 3/3 | 11/11 | 23/23 | 31/31 | 46/46 | 66/66 |
+| Scope violations | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Ponytail violations | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Runtime dependencies | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Attempt | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
+| Rework | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+T-007 measured the artifact it produces instead of a transition:
+
+| | `task context` |
+|---|---:|
+| Same input, same bytes (SHA-256 across two runs) | yes |
+| Stdout on each of eleven failure paths | 0 bytes |
+| Blocked path categories | 6 |
+| Steps a person takes to hand context to a worker | 4 → 2 |
+
+That last row is **not zero**. The command builds the package; a person still passes it on.
 
 Each lifecycle task also measured the transition it automates:
 
@@ -164,7 +180,8 @@ Full records: [T-001](docs/benchmarks/T-001-project-scaffold.md) ·
 [T-003](docs/benchmarks/T-003-task-start-command.md) ·
 [T-004](docs/benchmarks/T-004-task-submit-command.md) ·
 [T-005](docs/benchmarks/T-005-fix-required-section-validation.md) ·
-[T-006](docs/benchmarks/T-006-task-approve-command.md)
+[T-006](docs/benchmarks/T-006-task-approve-command.md) ·
+[T-007](docs/benchmarks/T-007-context-builder.md)
 
 ## Quick Start
 
@@ -186,11 +203,15 @@ node dist/cli.js --version
 node dist/cli.js --help
 ```
 
-`task start` operates on the `.bcos/` directory of the **current working directory**.
-It works in this repository because `.bcos/tasks/`, `.bcos/events.jsonl`, and
-`.bcos/state.json` already exist. There is no `bcos init` yet, so a fresh project has to
-create that structure by hand before the command can run. The commands listed under
-Planned do not exist at all.
+```bash
+node dist/cli.js task context T-007
+```
+
+The `task` commands operate on the `.bcos/` directory of the **current working
+directory**. They work in this repository because `.bcos/tasks/`, `.bcos/events.jsonl`,
+and `.bcos/state.json` already exist. There is no `bcos init` yet, so a fresh project has
+to create that structure by hand first. The commands listed under Planned do not exist
+at all.
 
 ## Repository Structure
 
