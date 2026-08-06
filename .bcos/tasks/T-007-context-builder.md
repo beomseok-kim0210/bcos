@@ -2,10 +2,10 @@
 protocol: "0.1"
 id: T-007
 title: Build deterministic context packages from task read lists
-status: TODO
-attempt: 0
+status: DONE
+attempt: 1
 created: 2026-08-06T02:43:50Z
-updated: 2026-08-06T02:43:50Z
+updated: 2026-08-06T03:20:04.164Z
 ---
 
 ## Objective
