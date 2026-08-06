@@ -101,6 +101,14 @@ Implemented and verified:
   package on stdout. The same input produces the same bytes: no timestamp is written,
   duplicates are removed, and the declared order is preserved. Paths outside the
   repository, binaries, oversized files, and credential-shaped names are refused
+- `bcos task run <id> --worker codex` — assembles the worker prompt and the context
+  package into one deterministic input and writes it to a Codex process on stdin, so
+  nobody has to copy it across. `--dry-run` prints the command, arguments, and input
+  hashes without the input body and without starting a process. The runner spawns with
+  `shell: false` and the task id never reaches `argv`, so shell metacharacters in an id
+  cannot execute. **It does not own the lifecycle:** it never runs `start`, `submit`, or
+  `approve`, never interprets the worker's output, and leaves `events.jsonl` unchanged
+  on every path — success, failure, and timeout alike
 - Lifecycle guards checked **before any write**, so a rejected transition leaves every
   file untouched — verified across eleven failure paths. `task context` writes nothing
   at all, and a rejected package emits zero bytes to stdout
@@ -112,8 +120,8 @@ Implemented and verified:
 
 Not implemented. Do not expect these to work yet.
 
-- Worker execution — the package still has to be handed to the worker by a person
-- Prompt assembly and model adapters
+- Prompt assembly and model adapters — `codex` is the only worker `task run` accepts
+- A default timeout for `task run`; without `--timeout` a stalled worker waits forever
 - `bcos task request-changes`, `bcos task block`, `bcos task unblock`
 - `bcos task create`, `bcos task list`
 - `bcos init`, `bcos status`, `bcos reindex`
@@ -125,30 +133,44 @@ Not implemented. Do not expect these to work yet.
 `request-changes` by hand. `actor_id` is self-declared, so separation of duties assumes
 a trusted environment; authentication is a known limit of protocol `0.1`.
 
+**`task run` has never been pointed at the real Codex.** Every path was verified against
+a fake worker written in JavaScript — deliberately, so the test suite never spends tokens
+or touches a network. What is proven is that the assembled bytes reach the process
+unchanged, not that a full task completes end to end.
+
 ## Verified Baselines
 
-Seven tasks have completed the full protocol cycle. These are **baselines, not improvements.**
+Eight tasks have completed the full protocol cycle. These are **baselines, not improvements.**
 
-| | T-001 | T-002 | T-003 | T-005 | T-004 | T-006 | T-007 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| Acceptance Criteria | 9/9 | 11/11 | 15/15 | 18/18 | 16/16 | 24/24 | 32/32 |
-| Tests | 3/3 | 3/3 | 11/11 | 23/23 | 31/31 | 46/46 | 66/66 |
-| Scope violations | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| Ponytail violations | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| Runtime dependencies | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| Attempt | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
-| Rework | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| | T-001 | T-002 | T-003 | T-005 | T-004 | T-006 | T-007 | T-008 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Acceptance Criteria | 9/9 | 11/11 | 15/15 | 18/18 | 16/16 | 24/24 | 32/32 | 46/46 |
+| Tests | 3/3 | 3/3 | 11/11 | 23/23 | 31/31 | 46/46 | 66/66 | 90/90 |
+| Scope violations | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Ponytail violations | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Runtime dependencies | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Attempt | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
+| Rework | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 
-T-007 measured the artifact it produces instead of a transition:
+T-007 and T-008 measured the artifacts they produce instead of a transition:
 
-| | `task context` |
-|---|---:|
-| Same input, same bytes (SHA-256 across two runs) | yes |
-| Stdout on each of eleven failure paths | 0 bytes |
-| Blocked path categories | 6 |
-| Steps a person takes to hand context to a worker | 4 → 2 |
+| | `task context` | `task run` |
+|---|---:|---:|
+| Same input, same bytes (SHA-256 across two runs) | yes | yes |
+| Assembled input reaches the worker unchanged | N/A | yes |
+| Task id present in worker `argv` | N/A | no |
+| Lifecycle transitions caused | 0 | 0 |
+| Stdout on each failure path | 0 bytes (11 paths) | 0 bytes (15 paths) |
+| Partial writes on failure paths | 0 | 0 |
+| Real Codex invocations across the test suite | N/A | 0 |
+| Steps a person takes to hand context to a worker | 4 → 2 | 2 → 1 |
 
-That last row is **not zero**. The command builds the package; a person still passes it on.
+That last row is **not zero**. One manual step went away — the copy-and-paste. Starting,
+submitting, reviewing, approving, and committing are all still done by a person.
+
+The reviewer verified `task run` against a fixture of their own rather than trusting the
+worker's tests, and confirmed the no-real-Codex claim by removing the Codex entry point
+from `PATH` and re-running the suite: 90 of 90 still passed.
 
 Each lifecycle task also measured the transition it automates:
 
@@ -181,7 +203,8 @@ Full records: [T-001](docs/benchmarks/T-001-project-scaffold.md) ·
 [T-004](docs/benchmarks/T-004-task-submit-command.md) ·
 [T-005](docs/benchmarks/T-005-fix-required-section-validation.md) ·
 [T-006](docs/benchmarks/T-006-task-approve-command.md) ·
-[T-007](docs/benchmarks/T-007-context-builder.md)
+[T-007](docs/benchmarks/T-007-context-builder.md) ·
+[T-008](docs/benchmarks/T-008-worker-runner-poc.md)
 
 ## Quick Start
 
@@ -205,6 +228,15 @@ node dist/cli.js --help
 
 ```bash
 node dist/cli.js task context T-007
+```
+
+`task run` needs a task in `IN_PROGRESS`, and every task in this repository is `DONE`, so
+there is nothing here to run it against — the command below is a form to use on your own
+task, not one to paste as is. `--dry-run` prints the command, the arguments, and the
+input hashes without starting a process:
+
+```
+node dist/cli.js task run <your-in-progress-task-id> --worker codex --dry-run
 ```
 
 The `task` commands operate on the `.bcos/` directory of the **current working
@@ -244,8 +276,8 @@ tests/                Tests
 ## Roadmap
 
 Core CLI commands → automated lifecycle transitions → context package generation →
-role-based worker task templates → worktree-isolated parallel workers →
-vendor-neutral worker adapters.
+worker execution → prompt assembly → vendor-neutral worker adapters →
+role-based worker task templates → worktree-isolated parallel workers.
 
 Stages and entry conditions: [docs/vision.md](docs/vision.md)
 

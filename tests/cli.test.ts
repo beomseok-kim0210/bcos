@@ -875,3 +875,315 @@ test("lifecycle start, submit, and approve retain success and failure paths", (c
   assert.deepEqual(statuses.map((entry) => entry[1]), [0, 1, 0, 1, 0, 1]);
   context.diagnostic(statuses.map(([name, status]) => `${name}: exit ${status}`).join(", "));
 });
+
+function runnerFixture({
+  id = "T-200",
+  status = "IN_PROGRESS",
+  prompt = "FIXTURE WORKER PROMPT",
+  promptCount = 1,
+  items = ["- `one.txt`"],
+  files = { "one.txt": "fixture context\n" },
+  workerExitCode = 0,
+  workerDelay = 0,
+} = {}) {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "bcos-runner-"));
+  const tasksDirectory = path.join(directory, ".bcos", "tasks");
+  const promptsDirectory = path.join(directory, ".bcos", "prompts");
+  mkdirSync(tasksDirectory, { recursive: true });
+  mkdirSync(promptsDirectory, { recursive: true });
+  writeFileSync(
+    path.join(tasksDirectory, `${id}-runner.md`),
+    taskContent(id, status, contextBody(items), 1),
+    "utf8",
+  );
+  for (let index = 0; index < promptCount; index += 1) {
+    writeFileSync(
+      path.join(promptsDirectory, `${id}-worker-${index}.md`),
+      `# Worker Prompt\n\n---\n${prompt}\n---\n`,
+      "utf8",
+    );
+  }
+  writeFileSync(path.join(directory, ".bcos", "events.jsonl"), "event-before\n", "utf8");
+  writeFileSync(path.join(directory, ".bcos", "state.json"), "state-before\n", "utf8");
+  for (const [name, content] of Object.entries(files)) {
+    const filePath = path.join(directory, ...name.split("/"));
+    mkdirSync(path.dirname(filePath), { recursive: true });
+    writeFileSync(filePath, content, "utf8");
+  }
+  const workerPath = path.join(directory, "fake-worker.js");
+  writeFileSync(workerPath, `
+import { createHash } from "node:crypto";
+import { renameSync, writeFileSync } from "node:fs";
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  setTimeout(() => {
+    const receivedTemp = "received.txt.tmp";
+    writeFileSync(receivedTemp, input, "utf8");
+    renameSync(receivedTemp, "received.txt");
+    console.log("stdin-sha256:" + createHash("sha256").update(input, "utf8").digest("hex"));
+    console.log("cwd:" + process.cwd());
+    console.log("argv:" + JSON.stringify(process.argv.slice(2)));
+    console.error("fake-worker-stderr");
+    process.exitCode = ${workerExitCode};
+  }, ${workerDelay});
+});
+`, "utf8");
+  return { directory, workerPath, id };
+}
+
+function runWorker(directory, workerPath, id = "T-200", ...extraArguments) {
+  return spawnSync(process.execPath, [
+    cli, "task", "run", id, "--worker", "codex", "--worker-command", workerPath,
+    ...extraArguments,
+  ], { cwd: directory, encoding: "utf8", timeout: 5_000 });
+}
+
+function withRunnerFixture(callback, options) {
+  const fixture_ = runnerFixture(options);
+  try {
+    callback(fixture_);
+  } finally {
+    rmSync(fixture_.directory, { recursive: true, force: true });
+  }
+}
+
+function dryRun(fixture_) {
+  return runWorker(fixture_.directory, fixture_.workerPath, fixture_.id, "--dry-run");
+}
+
+function summaryValue(output, label) {
+  return new RegExp(`^${label}: (.+)$`, "m").exec(output)?.[1];
+}
+
+function assertRunnerFailureWithoutChanges(options, mutate) {
+  withRunnerFixture((fixture_) => {
+    if (mutate) mutate(fixture_);
+    const before = bcosSnapshot(fixture_.directory);
+    const result = runWorker(fixture_.directory, fixture_.workerPath, fixture_.id, "--dry-run");
+    assert.equal(result.status, 1);
+    assert.ok(result.stderr);
+    assert.deepEqual(bcosSnapshot(fixture_.directory), before);
+  }, options);
+}
+
+test("task run dry-run reports command, args, cwd, and Prompt path", (context) => {
+  withRunnerFixture((fixture_) => {
+    const result = dryRun(fixture_);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(summaryValue(result.stdout, "command"), process.execPath);
+    assert.match(result.stdout, /^args: \[.*"exec","-","--cd",.*\]$/m);
+    assert.equal(summaryValue(result.stdout, "cwd"), fixture_.directory);
+    assert.match(result.stdout, /^Prompt: \.bcos[\\/]prompts[\\/]T-200-worker-0\.md$/m);
+    const reportedArgs = JSON.parse(summaryValue(result.stdout, "args"));
+    const sanitizedArgs = reportedArgs.map((value) => {
+      if (value === fixture_.workerPath) return "<fake-worker.js>";
+      if (value === fixture_.directory) return "<fixture-root>";
+      return value;
+    });
+    context.diagnostic([
+      "command: <node>",
+      `args: ${JSON.stringify(sanitizedArgs)}`,
+      "cwd: <fixture-root>",
+      ...result.stdout.trim().split(/\r?\n/).slice(3),
+    ].join("\n"));
+  });
+});
+
+test("task run dry-run reports Context count and hashes", () => {
+  withRunnerFixture((fixture_) => {
+    const result = dryRun(fixture_);
+    assert.match(result.stdout, /^Context file count: 1$/m);
+    assert.match(result.stdout, /^Context SHA-256: [a-f0-9]{64}$/m);
+    assert.match(result.stdout, /^stdin SHA-256: [a-f0-9]{64}$/m);
+  });
+});
+
+test("task run dry-run reports stdin character and line counts without its body", () => {
+  withRunnerFixture((fixture_) => {
+    const result = dryRun(fixture_);
+    assert.match(result.stdout, /^stdin characters: \d+$/m);
+    assert.match(result.stdout, /^stdin lines: \d+$/m);
+    assert.doesNotMatch(result.stdout, /BCOS WORKER EXECUTION/);
+    assert.doesNotMatch(result.stdout, /FIXTURE WORKER PROMPT/);
+  });
+});
+
+test("task run dry-run is deterministic and changes no .bcos files", () => {
+  withRunnerFixture((fixture_) => {
+    const before = bcosSnapshot(fixture_.directory);
+    const first = dryRun(fixture_);
+    const second = dryRun(fixture_);
+    assert.equal(summaryValue(first.stdout, "stdin SHA-256"), summaryValue(second.stdout, "stdin SHA-256"));
+    assert.deepEqual(bcosSnapshot(fixture_.directory), before);
+  });
+});
+
+test("task run delivers the exact dry-run stdin hash to the fake worker", () => {
+  withRunnerFixture((fixture_) => {
+    const expected = summaryValue(dryRun(fixture_).stdout, "stdin SHA-256");
+    const result = runWorker(fixture_.directory, fixture_.workerPath, fixture_.id);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(`^stdin-sha256:${expected}$`, "m"));
+  });
+});
+
+test("task run assembles identity, safety instructions, Prompt, and Context once", () => {
+  withRunnerFixture((fixture_) => {
+    assert.equal(runWorker(fixture_.directory, fixture_.workerPath, fixture_.id).status, 0);
+    const input = readFileSync(path.join(fixture_.directory, "received.txt"), "utf8");
+    assert.match(input, /task: T-200/);
+    assert.match(input, /worker: codex/);
+    assert.match(input, /report: \.bcos[\\/]reports[\\/]T-200-runner\.md/);
+    assert.match(input, /목록 밖의 파일을 임의로 열지 마라/);
+    assert.match(input, /git 명령을 실행하지 마라/);
+    assert.match(input, /`task submit`을 비롯한 어떤 bcos 명령도 실행하지 마라/);
+    assert.equal(input.match(/FIXTURE WORKER PROMPT/g)?.length, 1);
+    assert.equal(input.match(/=== BCOS CONTEXT PACKAGE v0\.1 ===/g)?.length, 1);
+  });
+});
+
+test("task run uses the fixture root as worker cwd and does not pass Task ID in argv", () => {
+  withRunnerFixture((fixture_) => {
+    const result = runWorker(fixture_.directory, fixture_.workerPath, fixture_.id);
+    assert.match(result.stdout, new RegExp(`^cwd:${fixture_.directory.replaceAll("\\", "\\\\")}$`, "m"));
+    const argv = JSON.parse(/^argv:(.+)$/m.exec(result.stdout)?.[1]);
+    assert.deepEqual(argv, ["exec", "-", "--cd", fixture_.directory]);
+    assert.ok(!argv.includes(fixture_.id));
+  });
+});
+
+test("task run streams fake worker stdout and stderr and reports byte counts", () => {
+  withRunnerFixture((fixture_) => {
+    const result = runWorker(fixture_.directory, fixture_.workerPath, fixture_.id);
+    assert.match(result.stdout, /stdin-sha256:/);
+    assert.match(result.stderr, /fake-worker-stderr/);
+    assert.match(result.stdout, /^Worker stdout bytes: \d+$/m);
+    assert.match(result.stdout, /^Worker stderr bytes: \d+$/m);
+  });
+});
+
+test("task run reports exit zero and execution duration", () => {
+  withRunnerFixture((fixture_) => {
+    const result = runWorker(fixture_.directory, fixture_.workerPath, fixture_.id);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^Worker exit code: 0$/m);
+    assert.match(result.stdout, /^Worker duration ms: \d+$/m);
+  });
+});
+
+test("task run distinguishes and propagates fake worker exit 3", () => {
+  withRunnerFixture((fixture_) => {
+    const result = runWorker(fixture_.directory, fixture_.workerPath, fixture_.id);
+    assert.equal(result.status, 3);
+    assert.match(result.stdout, /^Worker exit code: 3$/m);
+    assert.match(result.stderr, /Worker failed with exit code 3/);
+  }, { workerExitCode: 3 });
+});
+
+test("task run timeout fails and changes no .bcos files", () => {
+  withRunnerFixture((fixture_) => {
+    const before = bcosSnapshot(fixture_.directory);
+    const result = runWorker(fixture_.directory, fixture_.workerPath, fixture_.id, "--timeout", "1");
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Worker timed out after 1 seconds/);
+    assert.deepEqual(bcosSnapshot(fixture_.directory), before);
+  }, { workerDelay: 2_000 });
+});
+
+test("task run rejects a missing Task without changes", () => {
+  assertRunnerFailureWithoutChanges(undefined, (fixture_) => { fixture_.id = "T-999"; });
+});
+
+test("task run rejects a Task not IN_PROGRESS without changes", () => {
+  assertRunnerFailureWithoutChanges({ status: "TODO" });
+});
+
+test("task run rejects a missing Prompt without changes", () => {
+  assertRunnerFailureWithoutChanges({ promptCount: 0 });
+});
+
+test("task run rejects multiple Prompts without changes", () => {
+  assertRunnerFailureWithoutChanges({ promptCount: 2 });
+});
+
+test("task run rejects a Prompt without a delimiter pair without changes", () => {
+  assertRunnerFailureWithoutChanges(undefined, (fixture_) => {
+    writeFileSync(path.join(fixture_.directory, ".bcos", "prompts", "T-200-worker-0.md"), "no delimiters\n", "utf8");
+  });
+});
+
+test("task run rejects an empty Prompt body without changes", () => {
+  assertRunnerFailureWithoutChanges({ prompt: "   " });
+});
+
+test("task run rejects Context creation failure without changes", () => {
+  assertRunnerFailureWithoutChanges({ items: ["- `missing.txt`"], files: {} });
+});
+
+test("task run rejects unsupported workers without changes", () => {
+  withRunnerFixture((fixture_) => {
+    const before = bcosSnapshot(fixture_.directory);
+    const result = spawnSync(process.execPath, [
+      cli, "task", "run", fixture_.id, "--worker", "claude", "--worker-command", fixture_.workerPath,
+    ], { cwd: fixture_.directory, encoding: "utf8" });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Unsupported worker/);
+    assert.deepEqual(bcosSnapshot(fixture_.directory), before);
+  });
+});
+
+test("task run rejects a nonexistent worker command without changes", () => {
+  withRunnerFixture((fixture_) => {
+    const before = bcosSnapshot(fixture_.directory);
+    const result = runWorker(fixture_.directory, path.join(fixture_.directory, "missing-worker.js"), fixture_.id);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Worker command does not exist/);
+    assert.deepEqual(bcosSnapshot(fixture_.directory), before);
+  });
+});
+
+test("task run rejects every non-positive-integer timeout without changes", () => {
+  for (const timeout of ["0", "-1", "1.5", "text"]) {
+    withRunnerFixture((fixture_) => {
+      const before = bcosSnapshot(fixture_.directory);
+      const result = runWorker(fixture_.directory, fixture_.workerPath, fixture_.id, "--timeout", timeout);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /positive integer/);
+      assert.deepEqual(bcosSnapshot(fixture_.directory), before);
+    });
+  }
+});
+
+test("task run keeps shell metacharacters in stdin and out of worker argv", () => {
+  const id = "T-200;echo-injected";
+  withRunnerFixture((fixture_) => {
+    const result = runWorker(fixture_.directory, fixture_.workerPath, fixture_.id);
+    assert.equal(result.status, 0, result.stderr);
+    const argv = JSON.parse(/^argv:(.+)$/m.exec(result.stdout)?.[1]);
+    assert.ok(!argv.includes(id));
+    assert.match(readFileSync(path.join(fixture_.directory, "received.txt"), "utf8"), /task: T-200;echo-injected/);
+  }, { id });
+});
+
+test("task run requires worker and rejects unknown options without changes", () => {
+  withRunnerFixture((fixture_) => {
+    for (const args of [
+      [cli, "task", "run", fixture_.id],
+      [cli, "task", "run", fixture_.id, "--worker", "codex", "--unknown"],
+    ]) {
+      const before = bcosSnapshot(fixture_.directory);
+      const result = spawnSync(process.execPath, args, { cwd: fixture_.directory, encoding: "utf8" });
+      assert.equal(result.status, 1);
+      assert.deepEqual(bcosSnapshot(fixture_.directory), before);
+    }
+  });
+});
+
+test("task context retains success and failure paths after runner routing", () => {
+  withContextFixture((directory) => {
+    assert.equal(runContext(directory).status, 0);
+    assert.equal(runContext(directory, "T-999").status, 1);
+  });
+});

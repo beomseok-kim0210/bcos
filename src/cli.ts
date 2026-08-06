@@ -10,6 +10,7 @@ import {
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildContextPackage } from "./context.js";
+import { runCodexWorker, type RunWorkerOptions } from "./runner.js";
 
 const packagePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json");
 const packageJson = JSON.parse(readFileSync(packagePath, "utf8")) as { version: string };
@@ -300,6 +301,43 @@ function contextTask(): void {
   }
 }
 
+function runTask(): void {
+  const taskId = process.argv[4];
+  if (!taskId) fail("Task id is required");
+  const args = process.argv.slice(5);
+  const workerIndex = args.indexOf("--worker");
+  const timeoutIndex = args.indexOf("--timeout");
+  const commandIndex = args.indexOf("--worker-command");
+  const worker = workerIndex >= 0 ? args[workerIndex + 1] : undefined;
+  if (!worker) fail("--worker is required");
+
+  const options: RunWorkerOptions = {
+    worker,
+    dryRun: args.includes("--dry-run"),
+    timeoutSeconds: timeoutIndex >= 0 ? Number(args[timeoutIndex + 1]) : undefined,
+    workerCommand: commandIndex >= 0 ? args[commandIndex + 1] : undefined,
+  };
+  const valued = new Set(["--worker", "--timeout", "--worker-command"]);
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index];
+    if (valued.has(value)) {
+      if (!args[index + 1] || args[index + 1].startsWith("--")) fail(`${value} requires a value`);
+      index += 1;
+    } else if (value !== "--dry-run") {
+      fail(`Unknown task run option: ${value}`);
+    }
+  }
+
+  runCodexWorker(taskId, options)
+    .then((exitCode) => {
+      process.exitCode = exitCode;
+    })
+    .catch((error) => {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    });
+}
+
 if (argument === "task" && process.argv[3] === "start") {
   startTask();
 } else if (argument === "task" && process.argv[3] === "submit") {
@@ -308,10 +346,12 @@ if (argument === "task" && process.argv[3] === "start") {
   approveTask();
 } else if (argument === "task" && process.argv[3] === "context") {
   contextTask();
+} else if (argument === "task" && process.argv[3] === "run") {
+  runTask();
 } else if (argument === "--version") {
   console.log(packageJson.version);
 } else if (argument === "--help") {
-  console.log("Usage: bcos [--version | --help | task <start|submit|approve|context> <id> --actor-role <role> --actor-id <id>]");
+  console.log("Usage: bcos [--version | --help | task <start|submit|approve|context|run> <id>]");
 } else {
   console.error(`Unknown argument: ${argument ?? "(none)"}`);
   process.exitCode = 1;

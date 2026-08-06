@@ -2,10 +2,10 @@
 protocol: "0.1"
 id: T-008
 title: Run a Codex worker with the assembled context package
-status: TODO
-attempt: 0
+status: DONE
+attempt: 1
 created: 2026-08-06T03:34:59Z
-updated: 2026-08-06T03:34:59Z
+updated: 2026-08-06T04:29:25.957Z
 ---
 
 ## Objective
