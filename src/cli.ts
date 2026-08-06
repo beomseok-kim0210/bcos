@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildContextPackage } from "./context.js";
 
 const packagePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json");
 const packageJson = JSON.parse(readFileSync(packagePath, "utf8")) as { version: string };
@@ -287,16 +288,30 @@ function approveTask(): void {
   persistTransition(taskSet, taskId, "DONE", updatedTask, event, timestamp);
 }
 
+function contextTask(): void {
+  const taskId = process.argv[4];
+  if (!taskId) fail("Task id is required");
+  try {
+    const contextPackage = buildContextPackage(taskId);
+    if (contextPackage.warning) console.error(contextPackage.warning);
+    process.stdout.write(contextPackage.output);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
+}
+
 if (argument === "task" && process.argv[3] === "start") {
   startTask();
 } else if (argument === "task" && process.argv[3] === "submit") {
   submitTask();
 } else if (argument === "task" && process.argv[3] === "approve") {
   approveTask();
+} else if (argument === "task" && process.argv[3] === "context") {
+  contextTask();
 } else if (argument === "--version") {
   console.log(packageJson.version);
 } else if (argument === "--help") {
-  console.log("Usage: bcos [--version | --help | task <start|submit|approve> <id> --actor-role <role> --actor-id <id>]");
+  console.log("Usage: bcos [--version | --help | task <start|submit|approve|context> <id> --actor-role <role> --actor-id <id>]");
 } else {
   console.error(`Unknown argument: ${argument ?? "(none)"}`);
   process.exitCode = 1;

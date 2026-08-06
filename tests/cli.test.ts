@@ -172,6 +172,101 @@ function assertStartFailsWithoutChanges(body) {
   }, [{ id: "T-001", status: "TODO", body }]);
 }
 
+const actualT004Task = readFileSync(
+  path.join(root, ".bcos", "tasks", "T-004-task-submit-command.md"),
+  "utf8",
+);
+const actualRfc001 = readFileSync(
+  path.join(root, "docs", "rfcs", "RFC-001-task-protocol.md"),
+  "utf8",
+);
+
+function contextBody(items, label = "**읽기 허용 (Read List)**") {
+  return `
+## Objective
+Build context.
+
+## Scope
+Read files.
+
+## Out of Scope
+Writes.
+
+## Acceptance Criteria
+1. It prints.
+
+## Expected Files
+
+**생성**
+
+- \`ignored.txt\`
+
+${label}
+
+${items.join("\n")}
+
+**쓰기**
+
+- \`also-ignored.txt\`
+
+## Test Requirements
+Run tests.
+`;
+}
+
+function contextFixture({
+  id = "T-100",
+  items = ["- `one.txt`", "- `two.txt` — second note"],
+  files = { "one.txt": "first file\n", "two.txt": "두 번째 파일\n" },
+  body = contextBody(items),
+  status = "IN_PROGRESS",
+  attempt = 3,
+} = {}) {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "bcos-context-"));
+  const tasksDirectory = path.join(directory, ".bcos", "tasks");
+  mkdirSync(tasksDirectory, { recursive: true });
+  writeFileSync(
+    path.join(tasksDirectory, `${id}-context.md`),
+    taskContent(id, status, body, attempt),
+    "utf8",
+  );
+  writeFileSync(path.join(directory, ".bcos", "events.jsonl"), "event-before\n", "utf8");
+  writeFileSync(path.join(directory, ".bcos", "state.json"), "state-before\n", "utf8");
+  for (const [name, content] of Object.entries(files)) {
+    const filePath = path.join(directory, ...name.split("/"));
+    mkdirSync(path.dirname(filePath), { recursive: true });
+    writeFileSync(filePath, content);
+  }
+  return directory;
+}
+
+function runContext(directory, taskId = "T-100") {
+  return spawnSync(process.execPath, [cli, "task", "context", taskId], {
+    cwd: directory,
+    encoding: "utf8",
+  });
+}
+
+function withContextFixture(callback, options) {
+  const directory = contextFixture(options);
+  try {
+    callback(directory);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+function assertContextFailure(options) {
+  withContextFixture((directory) => {
+    const before = bcosSnapshot(directory);
+    const result = runContext(directory);
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, "");
+    assert.ok(result.stderr);
+    assert.deepEqual(bcosSnapshot(directory), before);
+  }, options);
+}
+
 test("--version prints the package version", () => {
   const result = run("--version");
   assert.equal(result.status, 0);
@@ -583,3 +678,200 @@ test("task approve rejects the worker role without changes", () => withFixture((
   assert.equal(runApprove(directory, "reviewer-a", "worker").status, 1);
   assert.deepEqual(bcosSnapshot(directory), before);
 }, approveTaskFixture, attemptOneSubmitted));
+
+test("task context prints the package header and footer without changing .bcos", () => {
+  withContextFixture((directory) => {
+    const before = bcosSnapshot(directory);
+    const result = runContext(directory);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^=== BCOS CONTEXT PACKAGE v0\.1 ===\n/);
+    assert.match(result.stdout, /=== END CONTEXT PACKAGE ===\n$/);
+    assert.match(result.stdout, /note: — second note/);
+    assert.deepEqual(bcosSnapshot(directory), before);
+  });
+});
+
+test("task context includes each Read List file exactly once", () => {
+  withContextFixture((directory) => {
+    const output = runContext(directory).stdout;
+    assert.equal(output.match(/--- FILE \d+\/2: one\.txt ---/g)?.length, 1);
+    assert.equal(output.match(/--- FILE \d+\/2: two\.txt ---/g)?.length, 1);
+  });
+});
+
+test("task context removes duplicate paths and updates the file count", () => {
+  withContextFixture((directory) => {
+    const result = runContext(directory);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^files: 1$/m);
+    assert.equal(result.stdout.match(/--- FILE 1\/1: one\.txt ---/g)?.length, 1);
+  }, { items: ["- `one.txt`", "- `one.txt` — duplicate"], files: { "one.txt": "one" } });
+});
+
+test("task context preserves Read List order", () => {
+  withContextFixture((directory) => {
+    const output = runContext(directory).stdout;
+    assert.ok(output.indexOf(": two.txt ---") < output.indexOf(": one.txt ---"));
+  }, { items: ["- `two.txt`", "- `one.txt`"] });
+});
+
+test("task context is byte-for-byte deterministic", () => {
+  withContextFixture((directory) => {
+    const first = runContext(directory);
+    const second = runContext(directory);
+    assert.equal(first.status, 0, first.stderr);
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal(first.stdout, second.stdout);
+  });
+});
+
+test("task context reads metadata only from the opening frontmatter", () => {
+  const body = `${contextBody(["- `one.txt`"])}\n\`\`\`text\nstatus: TODO\nattempt: 0\n\`\`\`\n`;
+  withContextFixture((directory) => {
+    const result = runContext(directory);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^task: T-100$/m);
+    assert.match(result.stdout, /^status: IN_PROGRESS$/m);
+    assert.match(result.stdout, /^attempt: 3$/m);
+  }, { body, files: { "one.txt": "one" } });
+});
+
+test("task context reports exact file, character, and line totals", () => {
+  const files = { "one.txt": "abc\n", "two.txt": "한글" };
+  withContextFixture((directory) => {
+    const result = runContext(directory);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^files: 2$/m);
+    assert.match(result.stdout, new RegExp(`^characters: ${files["one.txt"].length + files["two.txt"].length}$`, "m"));
+    assert.match(result.stdout, /^lines: 3$/m);
+  }, { files });
+});
+
+test("task context preserves UTF-8 Korean text", () => {
+  withContextFixture((directory) => {
+    const result = runContext(directory);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /한글 문맥 패키지/);
+  }, { items: ["- `korean.txt`"], files: { "korean.txt": "한글 문맥 패키지\n" } });
+});
+
+test("task context accepts a copied real T-004 Task fixture", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "bcos-context-real-task-"));
+  try {
+    const fixtureFiles = {
+      "AGENTS.md": "fixture agents\n",
+      ".bcos/tasks/T-004-task-submit-command.md": actualT004Task,
+      ".bcos/prompts/T-004-task-submit-command-codex-prompt.md": "fixture prompt\n",
+      "src/cli.ts": "fixture cli\n",
+      "tests/cli.test.ts": "fixture tests\n",
+      "package.json": "{}\n",
+      "docs/rfcs/RFC-001-task-protocol.md": actualRfc001,
+    };
+    for (const [name, content] of Object.entries(fixtureFiles)) {
+      const filePath = path.join(directory, ...name.split("/"));
+      mkdirSync(path.dirname(filePath), { recursive: true });
+      writeFileSync(filePath, content, "utf8");
+    }
+    const result = runContext(directory, "T-004");
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^task: T-004$/m);
+    assert.match(result.stdout, /^files: 7$/m);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("task context includes a copied real RFC-001 fixture in full", () => {
+  withContextFixture((directory) => {
+    const result = runContext(directory);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /# RFC-001 — BCOS Task Protocol \(Core\)/);
+    assert.match(result.stdout, /## 10\. `1\.0` 승격 조건/);
+  }, {
+    items: ["- `docs/rfcs/RFC-001-task-protocol.md` — full file"],
+    files: { "docs/rfcs/RFC-001-task-protocol.md": actualRfc001 },
+  });
+});
+
+test("task context rejects a missing Task without stdout", () => {
+  withContextFixture((directory) => {
+    const before = bcosSnapshot(directory);
+    const result = runContext(directory, "T-999");
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, "");
+    assert.deepEqual(bcosSnapshot(directory), before);
+  });
+});
+
+test("task context rejects a missing Read List label without stdout", () => {
+  assertContextFailure({
+    body: contextBody(["- `one.txt`"], "**참고 파일**"),
+    files: { "one.txt": "one" },
+  });
+});
+
+test("task context rejects an empty Read List without stdout", () => {
+  assertContextFailure({ body: contextBody([]), files: {} });
+});
+
+test("task context rejects a missing file without stdout", () => {
+  assertContextFailure({ items: ["- `missing.txt`"], files: {} });
+});
+
+test("task context rejects parent traversal and absolute paths without stdout", () => {
+  for (const item of ["- `../outside.txt`", "- `C:\\outside.txt`", "- `/outside.txt`"]) {
+    assertContextFailure({ items: [item], files: {} });
+  }
+});
+
+test("task context rejects a NUL binary sample without stdout", () => {
+  assertContextFailure({ items: ["- `binary.bin`"], files: { "binary.bin": Buffer.from([65, 0, 66]) } });
+});
+
+test("task context rejects files larger than 256 KB without stdout", () => {
+  assertContextFailure({
+    items: ["- `large.txt`"],
+    files: { "large.txt": "x".repeat(256 * 1024 + 1) },
+  });
+});
+
+test("task context rejects every sensitive path pattern without stdout", () => {
+  const forbidden = [
+    ".env", ".env.local", "secret.pem", "secret.key", "secret.p12", "secret.pfx",
+    "id_rsa", "id_rsa.pub", ".git/config", "node_modules/pkg/file.js", "dist/cli.js",
+  ];
+  for (const name of forbidden) assertContextFailure({ items: [`- \`${name}\``], files: {} });
+});
+
+test("task context warns but succeeds when the package exceeds 8,000 characters", () => {
+  withContextFixture((directory) => {
+    const result = runContext(directory);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /Warning: Context Package exceeds 8,000 characters/);
+    assert.match(result.stdout, /=== END CONTEXT PACKAGE ===/);
+  }, { items: ["- `long.txt`"], files: { "long.txt": "x".repeat(8_001) } });
+});
+
+test("lifecycle start, submit, and approve retain success and failure paths", (context) => {
+  const statuses = [];
+  withFixture((directory) => statuses.push(["start success", runStart(directory).status]));
+  withFixture((directory) => statuses.push(["start failure", runStart(directory).status]), [
+    { id: "T-001", status: "DONE", body: requiredBody },
+  ]);
+  withFixture((directory) => statuses.push(["submit success", runSubmit(directory).status]), submitTaskFixture);
+  withFixture((directory) => statuses.push(["submit failure", runSubmit(directory).status]), [
+    { id: "T-001", status: "IN_PROGRESS", body: requiredBody, attempt: 1 },
+  ]);
+  withFixture(
+    (directory) => statuses.push(["approve success", runApprove(directory).status]),
+    approveTaskFixture,
+    attemptOneSubmitted,
+  );
+  withFixture(
+    (directory) => statuses.push(["approve failure (SoD)", runApprove(directory, "worker-a").status]),
+    approveTaskFixture,
+    attemptOneSubmitted,
+  );
+  assert.deepEqual(statuses.map((entry) => entry[1]), [0, 1, 0, 1, 0, 1]);
+  context.diagnostic(statuses.map(([name, status]) => `${name}: exit ${status}`).join(", "));
+});
