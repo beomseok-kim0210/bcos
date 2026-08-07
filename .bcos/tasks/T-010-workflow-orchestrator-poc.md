@@ -2,10 +2,10 @@
 protocol: "0.1"
 id: T-010
 title: Drive start, run, verify, and submit as one workflow command
-status: TODO
-attempt: 0
+status: DONE
+attempt: 1
 created: 2026-08-07T05:00:00Z
-updated: 2026-08-07T05:00:00Z
+updated: 2026-08-07T06:05:53.007Z
 ---
 
 ## Objective
