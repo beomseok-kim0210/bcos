@@ -109,6 +109,20 @@ Implemented and verified:
   cannot execute. **It does not own the lifecycle:** it never runs `start`, `submit`, or
   `approve`, never interprets the worker's output, and leaves `events.jsonl` unchanged
   on every path — success, failure, and timeout alike
+- **No task needs a hand-written worker prompt.** The runner sends one fixed preamble
+  with three substituted values — task id, worker, report path — followed by the context
+  package. The task document is the whole contract, and it is already in the package, so
+  a per-task prompt file was only ever a summary of documents the worker already had.
+  Two different tasks produce preambles that differ on those value lines and nowhere else
+- A task whose read list omits its own file is refused, naming the missing path. Without
+  it the worker would receive no contract at all
+- `task run` defaults to a 1,800-second timeout; `--timeout` overrides it, and zero,
+  negative, fractional, and non-numeric values are rejected rather than silently falling
+  back to the default
+- Raw telemetry on stdout as `telemetry <key>=<value>` — context and stdin identity,
+  configured timeout, first worker response, duration, exit code, timeout state, and byte
+  counts. **Measurements only:** no rate, ratio, or improvement is computed anywhere, and
+  a dry run omits the process-only fields rather than reporting them as zero
 - Lifecycle guards checked **before any write**, so a rejected transition leaves every
   file untouched — verified across eleven failure paths. `task context` writes nothing
   at all, and a rejected package emits zero bytes to stdout
@@ -120,8 +134,11 @@ Implemented and verified:
 
 Not implemented. Do not expect these to work yet.
 
-- Prompt assembly and model adapters — `codex` is the only worker `task run` accepts
-- A default timeout for `task run`; without `--timeout` a stalled worker waits forever
+- Model adapters — `codex` is the only worker `task run` accepts, so there is no model to
+  switch to and no token or cost figure to record
+- Telemetry persistence — the fields go to stdout and are gone when the window closes
+- Automated review and rework — a report that declares its own failure still passes
+  `submit`, because the guard checks that a report exists, not what it claims
 - `bcos task request-changes`, `bcos task block`, `bcos task unblock`
 - `bcos task create`, `bcos task list`
 - `bcos init`, `bcos status`, `bcos reindex`
@@ -133,26 +150,37 @@ Not implemented. Do not expect these to work yet.
 `request-changes` by hand. `actor_id` is self-declared, so separation of duties assumes
 a trusted environment; authentication is a known limit of protocol `0.1`.
 
-**`task run` has never been pointed at the real Codex.** Every path was verified against
-a fake worker written in JavaScript — deliberately, so the test suite never spends tokens
-or touches a network. What is proven is that the assembled bytes reach the process
-unchanged, not that a full task completes end to end.
+**`task run` has now driven the real Codex once.** T-009 was implemented by a Codex
+process that BCOS started itself: no prompt pasted, no context copied. The run exited 0
+after about 359 seconds. That is one observation, not a success rate — and the test suite
+still uses a fake worker throughout, deliberately, so it never spends tokens or touches a
+network.
+
+That run also produced the first failure worth keeping. Codex could not spawn child
+processes inside its own sandbox (`spawn EPERM`), so the worker's `npm test` never ran;
+the suite was verified on the host instead, where three stale assertions surfaced and were
+fixed. **Running BCOS inside a worker that BCOS started is not yet supported**, and that
+is the first requirement for the orchestrator.
 
 ## Verified Baselines
 
-Eight tasks have completed the full protocol cycle. These are **baselines, not improvements.**
+Nine tasks have completed the full protocol cycle. These are **baselines, not improvements.**
 
-| | T-001 | T-002 | T-003 | T-005 | T-004 | T-006 | T-007 | T-008 |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Acceptance Criteria | 9/9 | 11/11 | 15/15 | 18/18 | 16/16 | 24/24 | 32/32 | 46/46 |
-| Tests | 3/3 | 3/3 | 11/11 | 23/23 | 31/31 | 46/46 | 66/66 | 90/90 |
-| Scope violations | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| Ponytail violations | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| Runtime dependencies | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| Attempt | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
-| Rework | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| | T-001 | T-002 | T-003 | T-005 | T-004 | T-006 | T-007 | T-008 | T-009 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Acceptance Criteria | 9/9 | 11/11 | 15/15 | 18/18 | 16/16 | 24/24 | 32/32 | 46/46 | 62/62 |
+| Tests | 3/3 | 3/3 | 11/11 | 23/23 | 31/31 | 46/46 | 66/66 | 90/90 | 99/99 |
+| Scope violations | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Ponytail violations | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Runtime dependencies | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Attempt | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
+| Rework | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | **1** |
 
-T-007 and T-008 measured the artifacts they produce instead of a transition:
+T-009 is the first task that needed rework. Its worker could not run the test suite at
+all inside its sandbox, and the host run then found three tests still asserting the output
+format T-009 replaced. The assertions were corrected; the product code was not.
+
+T-007, T-008, and T-009 measured the artifacts they produce instead of a transition:
 
 | | `task context` | `task run` |
 |---|---:|---:|
@@ -163,14 +191,32 @@ T-007 and T-008 measured the artifacts they produce instead of a transition:
 | Stdout on each failure path | 0 bytes (11 paths) | 0 bytes (15 paths) |
 | Partial writes on failure paths | 0 | 0 |
 | Real Codex invocations across the test suite | N/A | 0 |
+| Hand-written prompt files a task needs | N/A | 1 → 0 |
 | Steps a person takes to hand context to a worker | 4 → 2 | 2 → 1 |
 
 That last row is **not zero**. One manual step went away — the copy-and-paste. Starting,
 submitting, reviewing, approving, and committing are all still done by a person.
 
+The single real Codex run recorded these. They are **one observation each**, kept as a
+baseline for later comparison and nothing more:
+
+| | T-009, driven by `task run` |
+|---|---:|
+| Runner exit code | 0 |
+| Worker runtime | ~359 s |
+| Context files / characters | 8 / 99,522 |
+| Stdin characters / lines | 105,551 / 3,013 |
+| Worker stdout / stderr bytes | 663 / 750,989 |
+| Prompts pasted by a person | 0 |
+| Context copied by a person | 0 |
+
+Codex writes its progress to stderr and almost nothing to stdout, which is why the runner
+forwards output instead of accumulating it. **No token count, cost, or efficiency figure
+is claimed** — none of it is measured yet.
+
 The reviewer verified `task run` against a fixture of their own rather than trusting the
 worker's tests, and confirmed the no-real-Codex claim by removing the Codex entry point
-from `PATH` and re-running the suite: 90 of 90 still passed.
+from `PATH` and re-running the suite: 99 of 99 still passed.
 
 Each lifecycle task also measured the transition it automates:
 
@@ -204,7 +250,9 @@ Full records: [T-001](docs/benchmarks/T-001-project-scaffold.md) ·
 [T-005](docs/benchmarks/T-005-fix-required-section-validation.md) ·
 [T-006](docs/benchmarks/T-006-task-approve-command.md) ·
 [T-007](docs/benchmarks/T-007-context-builder.md) ·
-[T-008](docs/benchmarks/T-008-worker-runner-poc.md)
+[T-008](docs/benchmarks/T-008-worker-runner-poc.md) ·
+[T-009](docs/benchmarks/T-009-prompt-builder.md) ·
+[Telemetry field definitions](docs/benchmarks/TELEMETRY.md)
 
 ## Quick Start
 
@@ -276,8 +324,19 @@ tests/                Tests
 ## Roadmap
 
 Core CLI commands → automated lifecycle transitions → context package generation →
-worker execution → prompt assembly → vendor-neutral worker adapters →
-role-based worker task templates → worktree-isolated parallel workers.
+worker execution → prompt elimination — **done.** What follows:
+
+| | |
+|---|---|
+| **T-010** Workflow Orchestrator | Host-environment validation and a nested-worker guard, then `start` → `run` → report check → host verification → `submit` as one command |
+| **T-011** Reviewer / Rework Orchestration | Run the reviewer, act on the verdict, carry feedback back to the worker, loop until approval |
+| **T-012** Model Adapter | Token and cost collection, so the fields that read `N/A` today hold measurements |
+| **T-013** Multi-model Worker Switching | A second worker, which is what makes "switch models" mean anything |
+| **T-014** Benchmark Harness | Persist telemetry and answer the six fairness questions before comparing arms |
+| **T-015** Benchmark Report | Where division is finally allowed |
+
+T-010 leads because of what T-009 found: a worker BCOS starts cannot itself start
+processes, so anything that runs BCOS inside a worker has to detect that first.
 
 Stages and entry conditions: [docs/vision.md](docs/vision.md)
 

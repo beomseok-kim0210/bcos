@@ -83,7 +83,7 @@ Worker가 되기도 한다. 세션에는 기억을 남기지 않으므로 언제
   중복을 제거하며, 기재 순서를 그대로 유지한다
 - 저장소 밖 경로·바이너리·과대 파일·자격증명처럼 보이는 파일명은 거부한다.
   거부되면 stdout에 한 바이트도 나오지 않는다
-- `bcos task run <id> --worker codex` — Worker Prompt와 Context Package를 하나의
+- `bcos task run <id> --worker codex` — 고정 preamble과 Context Package를 하나의
   결정론적 입력으로 조립해 Codex 프로세스의 stdin에 넣는다. **사람이 복사하지 않는다.**
   `--dry-run`은 프로세스를 띄우지 않고 command·args·해시만 출력하며 **입력 본문은
   출력하지 않는다.** `shell: false`로 실행하고 **Task ID를 `argv`에 넣지 않아**
@@ -91,6 +91,19 @@ Worker가 되기도 한다. 세션에는 기억을 남기지 않으므로 언제
 - **Runner는 lifecycle을 소유하지 않는다.** `start`·`submit`·`approve`를 대신 실행하지
   않고, Worker 출력을 해석하지 않으며, 성공·실패·timeout 어느 경로에서도
   `events.jsonl`을 바꾸지 않는다
+- **Task마다 프롬프트를 손으로 쓰지 않는다.** Runner가 고정 preamble에 값 세 개
+  (Task ID·worker·Report 경로)만 채워 Context Package와 함께 보낸다. Task 문서가
+  계약 전부이고 그것이 이미 패키지 안에 있으므로, Task별 프롬프트 파일은 worker가
+  이미 받은 문서의 요약본이었을 뿐이다. 서로 다른 두 Task의 preamble은 그 값 줄
+  외에는 글자 하나도 다르지 않다
+- Read List에 자기 Task 파일이 없으면 실행을 거부하고 **빠진 경로를 출력한다.**
+  없으면 worker에게 계약이 전달되지 않는다
+- `task run` 기본 timeout은 1,800초다. `--timeout`으로 덮어쓰며 0·음수·소수·비숫자는
+  **기본값으로 조용히 대체되지 않고 거부된다**
+- `telemetry <key>=<value>` 형식의 원시 측정값을 stdout에 출력한다 — Context·stdin
+  식별, 설정된 timeout, worker 첫 응답, 소요 시간, 종료 코드, timeout 여부, 바이트 수.
+  **측정만 한다** — 비율·개선율을 어디서도 계산하지 않고, dry-run은 실행 관련 필드를
+  0으로 채우는 대신 아예 출력하지 않는다
 - 상태 전이 테스트는 임시 디렉터리에서만 실행되며 저장소의 실제 `.bcos/`를 건드리지 않는다
 - 모든 작업에 대해 Report, Review, Benchmark 기록을 남긴다
 
@@ -102,22 +115,29 @@ Worker가 되기도 한다. 세션에는 기억을 남기지 않으므로 언제
 `actor_id`는 자기 신고 값이므로 SoD는 신뢰 환경을 전제한다. 다른 문자열을 넣으면
 통과한다. 인증은 프로토콜 `0.1`의 알려진 한계이며 별도 RFC의 대상이다.
 
-**`task run`을 실제 Codex에 연결해 본 적이 없다.** 모든 경로는 JavaScript로 만든
-가짜 worker로 검증했다 — 테스트가 토큰을 쓰거나 네트워크에 나가지 않게 하려는
-의도적 선택이다. 증명된 것은 **조립한 바이트가 프로세스에 그대로 도달한다**는 것이지,
-Task 하나가 끝까지 완주된다는 것이 아니다.
+**`task run`이 실제 Codex를 한 번 돌렸다.** T-009는 BCOS가 직접 띄운 Codex 프로세스가
+구현했다 — 붙여넣은 프롬프트 0, 복사한 Context 0, 약 359초 만에 exit 0. **한 번의
+관측이지 성공률이 아니다.** 테스트는 여전히 전부 가짜 worker를 쓴다. 토큰을 쓰거나
+네트워크에 나가지 않게 하려는 의도적 선택이다.
 
-**지원하는 worker는 `codex` 하나뿐이다.** 모델을 바꾸는 것은 아직 불가능하다.
-기본 timeout도 없어서 `--timeout`을 주지 않으면 멈춘 worker를 무한히 기다린다.
+그 실행이 남긴 첫 실패도 함께 기록한다. Codex는 자기 샌드박스 안에서 자식 프로세스를
+띄우지 못해(`spawn EPERM`) worker의 `npm test`가 실행되지 않았다. host에서 대신
+돌리자 낡은 assertion 세 개가 드러났고 고쳤다. **BCOS가 띄운 worker 안에서 BCOS를
+다시 돌리는 것은 아직 지원되지 않는다.**
+
+**지원하는 worker는 `codex` 하나뿐이다.** 모델을 바꾸는 것은 아직 불가능하고
+토큰·비용도 측정하지 않는다. Telemetry는 stdout 전용이라 실행 창을 닫으면 사라진다.
+**Report가 스스로 실패를 선언해도 `submit`은 통과한다** — 가드가 Report의 존재만
+검사하고 내용은 보지 않기 때문이다.
 
 Task를 만들거나 목록을 보는 명령, 새 프로젝트에 `.bcos/` 구조를 만드는 `init`,
 상태를 조회하는 `status`와 인덱스를 다시 만드는 `reindex`도 아직 없다.
 
 구현 시점은 약속하지 않는다. 필요가 확인된 순서대로 만든다.
 
-## T-001부터 T-008까지
+## T-001부터 T-009까지
 
-지금까지 여덟 개의 작업이 프로토콜 전 과정을 통과했다.
+지금까지 아홉 개의 작업이 프로토콜 전 과정을 통과했다.
 
 | | 한 일 | AC | 테스트 |
 |---|---|---:|---:|
@@ -129,6 +149,7 @@ Task를 만들거나 목록을 보는 명령, 새 프로젝트에 `.bcos/` 구�
 | **T-006** | `task approve` 자동화, SoD를 코드로 강제 | 24/24 | 46/46 |
 | **T-007** | `task context` — 결정론적 Context Package 생성 | 32/32 | 66/66 |
 | **T-008** | `task run` — 조립한 입력을 Worker stdin으로 전달 | 46/46 | 90/90 |
+| **T-009** | 손으로 쓰던 Worker Prompt 제거 + Telemetry 정의 | 62/62 | 99/99 |
 
 세 전이 작업은 자동화한 대상을 직접 측정했다. 전이 한 건을 완료하는 데 사람이 편집해야
 하는 파일이 **3개에서 0개로** 바뀌었고, 수동 단계는 `start`가 6→1, `submit`이 5→1,
@@ -147,9 +168,13 @@ T-004부터는 전이가 **사후 복구 없이 실제 실행 시각으로 기�
 **T-006이 가장 중요한 전환점이다.** 그때까지 "제출한 주체는 승인할 수 없다"는 규칙은
 문서에 적힌 약속이었고 사람이 지켰다. 이제 도구가 거부한다.
 
-여덟 작업 모두 재작업 없이 한 번에 승인됐고, 범위 이탈과 과설계 위반은 0건이었다.
+T-009는 **재작업이 필요했던 첫 작업이다.** worker가 자기 샌드박스 안에서 테스트를
+아예 실행하지 못했고, host에서 돌리자 T-009가 바꾼 출력 형식을 여전히 기대하는 테스트
+세 개가 드러났다. assertion만 고쳤고 제품 코드는 건드리지 않았다.
 
-다만 이 수치들을 생산성 향상률로 환산하지는 않는다. 여덟 작업은 성격이 전부 다르고
+아홉 작업 모두 한 번의 시도로 승인됐고, 범위 이탈과 과설계 위반은 0건이었다.
+
+다만 이 수치들을 생산성 향상률로 환산하지는 않는다. 아홉 작업은 성격이 전부 다르고
 비교군이 없다. 위 단계 수는 특정 전이 하나에 대해 관찰된 절대값일 뿐이다.
 
 ## 직접 실행해 보기
@@ -213,15 +238,23 @@ src/                  CLI 구현
 | [ADR-002](decisions/ADR-002-storage.md) | SQLite 대신 텍스트 파일을 쓰는 이유 |
 | [ADR-003](decisions/ADR-003-task-centric-workers.md) | 역할을 Task에 두는 이유 |
 | [Git Convention](git-convention.md) | 커밋 규약 |
+| [Telemetry](benchmarks/TELEMETRY.md) | 세 arm 공통 측정 계약. 필드 84개 |
 
 ## 앞으로의 방향
 
-핵심 세 전이, Context 생성, Worker 실행까지 끝났다.
+핵심 세 전이, Context 생성, Worker 실행, 프롬프트 제거까지 끝났다.
 
-남은 전이 네 개를 마저 채우는 것은 이미 검증된 작업의 반복이다. 그보다 **모델을 바꿀 때
-사람이 프로젝트를 처음부터 다시 설명하는 문제**가 더 크다. 다음은 프롬프트 조립,
-그다음이 실행기 교체 — worker가 하나뿐인 지금은 "모델 전환"이라는 말 자체가 성립하지
-않는다.
+| | |
+|---|---|
+| **T-010** Workflow Orchestrator | host 환경 검증과 nested worker guard, 그다음 `start` → `run` → Report 확인 → host 검증 → `submit`을 한 명령으로 |
+| **T-011** Reviewer / Rework Orchestration | reviewer 자동 실행, verdict 처리, feedback 전달, 승인까지 loop |
+| **T-012** Model Adapter | 토큰·비용 수집. 지금 `N/A`인 필드를 실제 값으로 |
+| **T-013** Multi-model Worker Switching | 두 번째 worker. 이것이 있어야 "모델 전환"이 말이 된다 |
+| **T-014** Benchmark Harness | Telemetry 저장과 공정성 6문제 해결. arm 비교의 전제 |
+| **T-015** Benchmark Report | 여기서 처음으로 나눗셈을 허용한다 |
+
+**T-010이 먼저인 이유는 T-009가 찾아낸 것 때문이다** — BCOS가 띄운 worker는 스스로
+프로세스를 띄우지 못한다. worker 안에서 BCOS를 돌리려면 그것부터 감지해야 한다.
 
 `request-changes`를 비롯한 나머지 전이는 그 뒤에 채운다.
 
