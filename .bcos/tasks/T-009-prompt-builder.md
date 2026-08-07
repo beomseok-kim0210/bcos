@@ -2,10 +2,10 @@
 protocol: "0.1"
 id: T-009
 title: Build the worker prompt instead of hand-writing one per task
-status: TODO
-attempt: 0
+status: DONE
+attempt: 1
 created: 2026-08-06T04:45:00Z
-updated: 2026-08-06T04:45:00Z
+updated: 2026-08-07T04:48:58.268Z
 ---
 
 ## Objective
