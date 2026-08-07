@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -1311,4 +1312,273 @@ test("task context retains success and failure paths after runner routing", () =
     assert.equal(runContext(directory).status, 0);
     assert.equal(runContext(directory, "T-999").status, 1);
   });
+});
+
+function workflowFixture({ status = "TODO", attempt = 0, report = false, scriptsTest = true } = {}) {
+  const id = "T-300";
+  const directory = mkdtempSync(path.join(os.tmpdir(), "bcos-workflow-"));
+  const bcosDirectory = path.join(directory, ".bcos");
+  const taskName = `${id}-workflow.md`;
+  mkdirSync(path.join(bcosDirectory, "tasks"), { recursive: true });
+  mkdirSync(path.join(bcosDirectory, "reports"), { recursive: true });
+  mkdirSync(path.join(bcosDirectory, "reviews"), { recursive: true });
+  const body = contextBody([`- \`.bcos/tasks/${taskName}\``, "- `package.json`"]);
+  writeFileSync(path.join(bcosDirectory, "tasks", taskName), taskContent(id, status, body, attempt), "utf8");
+  writeFileSync(path.join(bcosDirectory, "events.jsonl"), "", "utf8");
+  writeFileSync(path.join(bcosDirectory, "state.json"), `${JSON.stringify({
+    protocol: "0.1", version: 1, project: "test", branch: "main",
+    counts: { TODO: status === "TODO" ? 1 : 0, IN_PROGRESS: status === "IN_PROGRESS" ? 1 : 0,
+      IMPLEMENTED: status === "IMPLEMENTED" ? 1 : 0, DONE: 0, BLOCKED: 0 },
+    current_task: status === "IN_PROGRESS" ? id : null, updated: "2026-08-04T00:00:00Z",
+  })}\n`, "utf8");
+  writeFileSync(path.join(directory, "package.json"), JSON.stringify({
+    type: "module", scripts: scriptsTest ? { test: "fixture" } : {},
+  }), "utf8");
+  if (report) writeFileSync(path.join(bcosDirectory, "reports", taskName), "## Attempt 1 — fixture\n", "utf8");
+  const workerPath = path.join(directory, "fake-worker.js");
+  writeFileSync(workerPath, `
+import { mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
+process.stdin.resume();
+process.stdin.on("end", () => {
+  if (process.env.WORKER_REPORT !== "no") {
+    const report = path.join(process.cwd(), ".bcos", "reports", "T-300-workflow.md");
+    mkdirSync(path.dirname(report), { recursive: true });
+    writeFileSync(report, "## Attempt 1 — fixture\\n", "utf8");
+  }
+  console.log("worker-session:" + process.env.BCOS_WORKER_SESSION);
+  setTimeout(() => { process.exitCode = Number(process.env.WORKER_EXIT || 0); }, Number(process.env.WORKER_DELAY || 0));
+});
+`, "utf8");
+  const verifierPath = path.join(directory, "fake-verifier.js");
+  writeFileSync(verifierPath, `
+import { writeFileSync } from "node:fs";
+import path from "node:path";
+console.log("fixture-verifier-stdout");
+console.error("fixture-verifier-stderr");
+writeFileSync(path.join(process.cwd(), "verification-ran.txt"), process.cwd(), "utf8");
+process.exitCode = Number(process.env.VERIFY_EXIT || 0);
+`, "utf8");
+  const pathRoot = path.join(directory, "fixture-path");
+  const npmPath = path.join(pathRoot, "node_modules", "npm", "bin");
+  mkdirSync(npmPath, { recursive: true });
+  writeFileSync(path.join(npmPath, "npm-cli.js"), `
+import { writeFileSync } from "node:fs";
+writeFileSync("npm-test-ran.txt", process.argv.slice(2).join(","), "utf8");
+`, "utf8");
+  return { directory, id, taskName, workerPath, verifierPath, pathRoot };
+}
+
+function runExecute(fixture_, extra = [], environment = {}) {
+  return spawnSync(process.execPath, [
+    cli, "task", "execute", fixture_.id, "--worker", "codex", "--actor-id", "workflow-actor",
+    "--worker-command", fixture_.workerPath, "--verify-command", fixture_.verifierPath, ...extra,
+  ], { cwd: fixture_.directory, encoding: "utf8", timeout: 8_000, env: { ...process.env, ...environment } });
+}
+
+function withWorkflowFixture(callback, options) {
+  const fixture_ = workflowFixture(options);
+  try { callback(fixture_); } finally { rmSync(fixture_.directory, { recursive: true, force: true }); }
+}
+
+function workflowEvents(fixture_) {
+  return readFileSync(path.join(fixture_.directory, ".bcos", "events.jsonl"), "utf8")
+    .split(/\r?\n/).filter(Boolean).map(JSON.parse);
+}
+
+test("task execute routes a complete TODO workflow", () => withWorkflowFixture((fixture_) => {
+  const result = runExecute(fixture_);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(readFileSync(path.join(fixture_.directory, ".bcos", "tasks", fixture_.taskName), "utf8"), /^status: IMPLEMENTED$/m);
+}));
+
+test("task execute performs start then submit without approval", () => withWorkflowFixture((fixture_) => {
+  assert.equal(runExecute(fixture_).status, 0);
+  assert.deepEqual(workflowEvents(fixture_).map((event) => event.event), ["TASK_STARTED", "TASK_SUBMITTED"]);
+}));
+
+test("task execute records its actor id on both transitions", () => withWorkflowFixture((fixture_) => {
+  assert.equal(runExecute(fixture_).status, 0);
+  assert.deepEqual(workflowEvents(fixture_).map((event) => event.actor_id), ["workflow-actor", "workflow-actor"]);
+}));
+
+test("task execute reports successful workflow telemetry", () => withWorkflowFixture((fixture_) => {
+  const values = telemetryValues(runExecute(fixture_).stdout);
+  assert.equal(values.workflow_exit_reason, "success");
+  assert.equal(values.lifecycle_transitions_caused, "2");
+  assert.equal(values.runner_invocations, "1");
+  assert.equal(values.verification_runs, "1");
+}));
+
+test("task execute sends the BCOS worker-session marker", () => withWorkflowFixture((fixture_) => {
+  assert.match(runExecute(fixture_).stdout, /^worker-session:1$/m);
+}));
+
+test("task execute rejects a nested worker before lifecycle changes", () => withWorkflowFixture((fixture_) => {
+  const before = bcosSnapshot(fixture_.directory);
+  const result = runExecute(fixture_, [], { BCOS_WORKER_SESSION: "1" });
+  assert.equal(result.status, 1);
+  assert.deepEqual(bcosSnapshot(fixture_.directory), before);
+  assert.equal(telemetryValues(result.stdout).workflow_exit_reason, "nested_worker");
+}));
+
+test("nested worker rejection directs the user to the host shell", () => withWorkflowFixture((fixture_) => {
+  assert.match(runExecute(fixture_, [], { BCOS_WORKER_SESSION: "1" }).stderr, /host shell/);
+}));
+
+test("nested worker rejection invokes neither runner nor verifier", () => withWorkflowFixture((fixture_) => {
+  const values = telemetryValues(runExecute(fixture_, [], { BCOS_WORKER_SESSION: "1" }).stdout);
+  assert.equal(values.runner_invocations, "0");
+  assert.equal(values.verification_runs, "0");
+  assert.ok(!("verification_exit_code" in values));
+}));
+
+test("task execute stops before lifecycle and runner when child creation is denied", () => withWorkflowFixture((fixture_) => {
+  const before = bcosSnapshot(fixture_.directory);
+  const result = spawnSync(process.execPath, [
+    "--permission", "--allow-fs-read=*", "--allow-fs-write=*", cli,
+    "task", "execute", fixture_.id, "--worker", "codex", "--actor-id", "a",
+    "--worker-command", fixture_.workerPath, "--verify-command", fixture_.verifierPath,
+  ], { cwd: fixture_.directory, encoding: "utf8" });
+  const values = telemetryValues(result.stdout);
+  assert.equal(result.status, 1);
+  assert.equal(values.workflow_exit_reason, "environment");
+  assert.equal(values.runner_invocations, "0");
+  assert.deepEqual(bcosSnapshot(fixture_.directory), before);
+}));
+
+test("task execute preserves IN_PROGRESS without adding a start event", () => withWorkflowFixture((fixture_) => {
+  const result = runExecute(fixture_);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(workflowEvents(fixture_).map((event) => event.event), ["TASK_SUBMITTED"]);
+}, { status: "IN_PROGRESS", attempt: 1 }));
+
+test("task execute rejects terminal task states", () => withWorkflowFixture((fixture_) => {
+  const result = runExecute(fixture_);
+  assert.equal(result.status, 1);
+  assert.equal(telemetryValues(result.stdout).workflow_exit_reason, "protocol");
+}, { status: "IMPLEMENTED", attempt: 1, report: true }));
+
+test("task execute worker failure leaves the task IN_PROGRESS", () => withWorkflowFixture((fixture_) => {
+  const result = runExecute(fixture_, [], { WORKER_EXIT: "3" });
+  assert.equal(result.status, 1);
+  assert.match(readFileSync(path.join(fixture_.directory, ".bcos", "tasks", fixture_.taskName), "utf8"), /^status: IN_PROGRESS$/m);
+  assert.equal(telemetryValues(result.stdout).workflow_exit_reason, "worker_nonzero");
+}));
+
+test("task execute worker failure does not submit", () => withWorkflowFixture((fixture_) => {
+  runExecute(fixture_, [], { WORKER_EXIT: "3" });
+  assert.deepEqual(workflowEvents(fixture_).map((event) => event.event), ["TASK_STARTED"]);
+}));
+
+test("task execute classifies runner timeout", () => withWorkflowFixture((fixture_) => {
+  const result = runExecute(fixture_, ["--timeout", "1"], { WORKER_DELAY: "2000" });
+  assert.equal(result.status, 1);
+  assert.equal(telemetryValues(result.stdout).workflow_exit_reason, "timeout");
+}));
+
+test("task execute rejects a missing Report before verification", () => withWorkflowFixture((fixture_) => {
+  const result = runExecute(fixture_, [], { WORKER_REPORT: "no" });
+  assert.equal(result.status, 1);
+  assert.equal(telemetryValues(result.stdout).workflow_exit_reason, "protocol");
+  assert.equal(existsSync(path.join(fixture_.directory, "verification-ran.txt")), false);
+}));
+
+test("task execute verification failure preserves Report and skips submit", () => withWorkflowFixture((fixture_) => {
+  const result = runExecute(fixture_, [], { VERIFY_EXIT: "4" });
+  assert.equal(result.status, 1);
+  assert.equal(telemetryValues(result.stdout).workflow_exit_reason, "verification");
+  assert.equal(existsSync(path.join(fixture_.directory, ".bcos", "reports", fixture_.taskName)), true);
+  assert.deepEqual(workflowEvents(fixture_).map((event) => event.event), ["TASK_STARTED"]);
+}));
+
+test("task execute forwards verifier stdout and stderr", () => withWorkflowFixture((fixture_) => {
+  const result = runExecute(fixture_);
+  assert.match(result.stdout, /fixture-verifier-stdout/);
+  assert.match(result.stderr, /fixture-verifier-stderr/);
+}));
+
+test("task execute runs verification from the fixture root", () => withWorkflowFixture((fixture_) => {
+  assert.equal(runExecute(fixture_).status, 0);
+  assert.equal(readFileSync(path.join(fixture_.directory, "verification-ran.txt"), "utf8"), fixture_.directory);
+}));
+
+test("task execute verify-only skips start and worker", () => withWorkflowFixture((fixture_) => {
+  const result = runExecute(fixture_, ["--verify-only"]);
+  const values = telemetryValues(result.stdout);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(values.runner_invocations, "0");
+  assert.equal(values.lifecycle_transitions_caused, "1");
+  assert.deepEqual(workflowEvents(fixture_).map((event) => event.event), ["TASK_SUBMITTED"]);
+}, { status: "IN_PROGRESS", attempt: 1, report: true }));
+
+test("task execute verify-only requires IN_PROGRESS", () => withWorkflowFixture((fixture_) => {
+  const result = runExecute(fixture_, ["--verify-only"]);
+  assert.equal(result.status, 1);
+  assert.equal(telemetryValues(result.stdout).workflow_exit_reason, "protocol");
+}, { report: true }));
+
+test("task execute verify-only requires a Report", () => withWorkflowFixture((fixture_) => {
+  const result = runExecute(fixture_, ["--verify-only"]);
+  assert.equal(result.status, 1);
+  assert.equal(telemetryValues(result.stdout).verification_runs, "0");
+}, { status: "IN_PROGRESS", attempt: 1 }));
+
+test("task execute requires worker and actor id", () => withWorkflowFixture((fixture_) => {
+  for (const args of [[cli, "task", "execute", fixture_.id, "--actor-id", "a"], [cli, "task", "execute", fixture_.id, "--worker", "codex"]]) {
+    const result = spawnSync(process.execPath, args, { cwd: fixture_.directory, encoding: "utf8" });
+    assert.equal(result.status, 1);
+    assert.equal(telemetryValues(result.stdout).workflow_exit_reason, "protocol");
+  }
+}));
+
+test("task execute rejects unsupported workers", () => withWorkflowFixture((fixture_) => {
+  const result = spawnSync(process.execPath, [cli, "task", "execute", fixture_.id, "--worker", "claude", "--actor-id", "a"], { cwd: fixture_.directory, encoding: "utf8" });
+  assert.equal(result.status, 1);
+  assert.equal(telemetryValues(result.stdout).workflow_exit_reason, "protocol");
+}));
+
+test("task execute rejects unknown options with telemetry", () => withWorkflowFixture((fixture_) => {
+  const result = runExecute(fixture_, ["--unknown"]);
+  assert.equal(result.status, 1);
+  assert.equal(telemetryValues(result.stdout).workflow_exit_reason, "protocol");
+}));
+
+test("task execute rejects a missing custom verifier", () => withWorkflowFixture((fixture_) => {
+  const result = runExecute(fixture_, ["--verify-command", "missing.js"]);
+  assert.equal(result.status, 1);
+  assert.equal(telemetryValues(result.stdout).workflow_exit_reason, "protocol");
+}));
+
+test("task execute uses package scripts.test through the npm JavaScript entry", () => withWorkflowFixture((fixture_) => {
+  const args = [cli, "task", "execute", fixture_.id, "--worker", "codex", "--actor-id", "a", "--worker-command", fixture_.workerPath];
+  const result = spawnSync(process.execPath, args, { cwd: fixture_.directory, encoding: "utf8", env: { ...process.env, PATH: fixture_.pathRoot } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(path.join(fixture_.directory, "npm-test-ran.txt"), "utf8"), "test");
+  assert.equal(telemetryValues(result.stdout).verification_command, "npm-test");
+}));
+
+test("task execute rejects package.json without scripts.test", () => withWorkflowFixture((fixture_) => {
+  const args = [cli, "task", "execute", fixture_.id, "--worker", "codex", "--actor-id", "a", "--worker-command", fixture_.workerPath];
+  const result = spawnSync(process.execPath, args, { cwd: fixture_.directory, encoding: "utf8" });
+  assert.equal(result.status, 1);
+  assert.equal(telemetryValues(result.stdout).workflow_exit_reason, "protocol");
+}, { scriptsTest: false }));
+
+test("task execute emits verification fields only after verification runs", () => withWorkflowFixture((fixture_) => {
+  const rejected = telemetryValues(runExecute(fixture_, [], { BCOS_WORKER_SESSION: "1" }).stdout);
+  assert.ok(!("verification_exit_code" in rejected));
+  const successful = telemetryValues(runExecute(fixture_).stdout);
+  assert.equal(successful.verification_exit_code, "0");
+  assert.match(successful.verification_duration_ms, /^\d+$/);
+}));
+
+test("task execute telemetry uses logical command names and no fixture path", () => withWorkflowFixture((fixture_) => {
+  const lines = runExecute(fixture_).stdout.split(/\r?\n/).filter((line) => line.startsWith("telemetry workflow_") || line.startsWith("telemetry verification_") || line.startsWith("telemetry nested_") || line.startsWith("telemetry runner_") || line.startsWith("telemetry lifecycle_"));
+  assert.ok(lines.includes("telemetry verification_command=custom-verifier"));
+  assert.doesNotMatch(lines.join("\n"), new RegExp(fixture_.directory.replaceAll("\\", "\\\\")));
+}));
+
+test("help advertises task execute", () => {
+  assert.match(run("--help").stdout, /execute/);
 });

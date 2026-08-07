@@ -225,6 +225,30 @@ Raw Data로 취급한다. 나눗셈이 들어가면 그때부터 금지 대상�
 **단가는 바뀐다.** `cost_source` 없이 기록된 비용은 나중에 재현할 수 없다.
 T-010은 단가를 코드에 박지 말고 값과 함께 출처를 남긴다.
 
+## 11. Workflow Metrics
+
+아래 필드에도 절대 규칙이 그대로 적용된다. 관측하지 않은 값은 0으로 채우지 않고
+`N/A`로 기록하며, 실행 중 출력할 때는 해당 필드 자체를 생략한다.
+
+| key | 단위 | 출처 | 가용성 |
+|---|---|---|---|
+| `workflow_started_at` | RFC 3339 | Orchestrator 시작 시각 | T-010 |
+| `workflow_completed_at` | RFC 3339 | Orchestrator 종료 시각 | T-010 |
+| `workflow_duration_ms` | ms | Orchestrator 시작 → 종료 | T-010 |
+| `workflow_exit_reason` | 분류 문자열 | exit code·error code와 workflow 단계 | T-010 |
+| `nested_worker_detected` | `true` \| `false` | `BCOS_WORKER_SESSION` 존재 여부 | T-010 |
+| `verification_command` | `npm-test` \| `custom-verifier` | 검증 명령 선택 | T-010 |
+| `verification_exit_code` | 정수 | 검증 프로세스 exit code | T-010 |
+| `verification_duration_ms` | ms | 검증 프로세스 시작 → 종료 | T-010 |
+| `verification_runs` | 건 | Orchestrator의 실제 검증 실행 횟수 | T-010 |
+| `runner_invocations` | 건 | Orchestrator의 실제 worker 실행 횟수 | T-010 |
+| `lifecycle_transitions_caused` | 건 | Orchestrator가 성공시킨 lifecycle 전이 | T-010 |
+| `workflow_resume_count` | 건 | 실행 사이의 누적 재개 횟수 | blocked |
+
+`verification_command`는 선택된 방식의 **논리 값이며 파일 경로가 아니다.**
+`workflow_resume_count`는 실행 간 상태를 저장해야 누적할 수 있지만 현재 Orchestrator는
+그 상태를 저장하지 않으므로 blocked다.
+
 ---
 
 ## 공개 지표와의 관계

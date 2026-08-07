@@ -11,6 +11,7 @@ export type RunWorkerOptions = {
   dryRun: boolean;
   timeoutSeconds?: number;
   workerCommand?: string;
+  onTimeout?: () => void;
 };
 
 type PreparedRun = {
@@ -190,9 +191,11 @@ export async function runCodexWorker(taskId: string, options: RunWorkerOptions):
       cwd: prepared.cwd,
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, BCOS_WORKER_SESSION: "1" },
     });
     const timer = setTimeout(() => {
       timedOut = true;
+      options.onTimeout?.();
       child.kill();
     }, prepared.timeoutSeconds * 1_000);
 
