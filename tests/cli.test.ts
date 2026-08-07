@@ -881,7 +881,7 @@ function runnerFixture({
   status = "IN_PROGRESS",
   prompt = "FIXTURE WORKER PROMPT",
   promptCount = 1,
-  items = ["- `one.txt`"],
+  items,
   files = { "one.txt": "fixture context\n" },
   workerExitCode = 0,
   workerDelay = 0,
@@ -891,9 +891,10 @@ function runnerFixture({
   const promptsDirectory = path.join(directory, ".bcos", "prompts");
   mkdirSync(tasksDirectory, { recursive: true });
   mkdirSync(promptsDirectory, { recursive: true });
+  const readItems = items ?? [`- \`.bcos/tasks/${id}-runner.md\``, "- `one.txt`"];
   writeFileSync(
     path.join(tasksDirectory, `${id}-runner.md`),
-    taskContent(id, status, contextBody(items), 1),
+    taskContent(id, status, contextBody(readItems), 1),
     "utf8",
   );
   for (let index = 0; index < promptCount; index += 1) {
@@ -968,14 +969,13 @@ function assertRunnerFailureWithoutChanges(options, mutate) {
   }, options);
 }
 
-test("task run dry-run reports command, args, cwd, and Prompt path", (context) => {
+test("task run dry-run reports command, args, and cwd", (context) => {
   withRunnerFixture((fixture_) => {
     const result = dryRun(fixture_);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(summaryValue(result.stdout, "command"), process.execPath);
     assert.match(result.stdout, /^args: \[.*"exec","-","--cd",.*\]$/m);
     assert.equal(summaryValue(result.stdout, "cwd"), fixture_.directory);
-    assert.match(result.stdout, /^Prompt: \.bcos[\\/]prompts[\\/]T-200-worker-0\.md$/m);
     const reportedArgs = JSON.parse(summaryValue(result.stdout, "args"));
     const sanitizedArgs = reportedArgs.map((value) => {
       if (value === fixture_.workerPath) return "<fake-worker.js>";
@@ -994,7 +994,7 @@ test("task run dry-run reports command, args, cwd, and Prompt path", (context) =
 test("task run dry-run reports Context count and hashes", () => {
   withRunnerFixture((fixture_) => {
     const result = dryRun(fixture_);
-    assert.match(result.stdout, /^Context file count: 1$/m);
+    assert.match(result.stdout, /^Context file count: 2$/m);
     assert.match(result.stdout, /^Context SHA-256: [a-f0-9]{64}$/m);
     assert.match(result.stdout, /^stdin SHA-256: [a-f0-9]{64}$/m);
   });
@@ -1029,18 +1029,24 @@ test("task run delivers the exact dry-run stdin hash to the fake worker", () => 
   });
 });
 
-test("task run assembles identity, safety instructions, Prompt, and Context once", () => {
+test("task run assembles the fixed preamble and Context once", () => {
   withRunnerFixture((fixture_) => {
     assert.equal(runWorker(fixture_.directory, fixture_.workerPath, fixture_.id).status, 0);
     const input = readFileSync(path.join(fixture_.directory, "received.txt"), "utf8");
-    assert.match(input, /task: T-200/);
-    assert.match(input, /worker: codex/);
+    assert.match(input, /  task:   T-200/);
+    assert.match(input, /  worker: codex/);
     assert.match(input, /report: \.bcos[\\/]reports[\\/]T-200-runner\.md/);
+    assert.match(input, /Task 문서가 있다\. 그것이 네 계약이다/);
     assert.match(input, /목록 밖의 파일을 임의로 열지 마라/);
+    assert.match(input, /저장소 전체를 탐색하지 마라/);
     assert.match(input, /git 명령을 실행하지 마라/);
-    assert.match(input, /`task submit`을 비롯한 어떤 bcos 명령도 실행하지 마라/);
-    assert.equal(input.match(/FIXTURE WORKER PROMPT/g)?.length, 1);
+    assert.match(input, /bcos 명령을 실행하지 마라/);
+    assert.match(input, /승인을 시도하지 마라/);
+    assert.match(input, /Acceptance Criteria를 전부 충족했을 때만 완료/);
+    assert.match(input, /Report를 쓰고 멈춰라/);
+    assert.doesNotMatch(input, /FIXTURE WORKER PROMPT/);
     assert.equal(input.match(/=== BCOS CONTEXT PACKAGE v0\.1 ===/g)?.length, 1);
+    assert.equal(input.match(/title: Test Task/g)?.length, 1);
   });
 });
 
@@ -1059,8 +1065,8 @@ test("task run streams fake worker stdout and stderr and reports byte counts", (
     const result = runWorker(fixture_.directory, fixture_.workerPath, fixture_.id);
     assert.match(result.stdout, /stdin-sha256:/);
     assert.match(result.stderr, /fake-worker-stderr/);
-    assert.match(result.stdout, /^Worker stdout bytes: \d+$/m);
-    assert.match(result.stdout, /^Worker stderr bytes: \d+$/m);
+    assert.match(result.stdout, /^telemetry worker_stdout_bytes=\d+$/m);
+    assert.match(result.stdout, /^telemetry worker_stderr_bytes=\d+$/m);
   });
 });
 
@@ -1068,8 +1074,8 @@ test("task run reports exit zero and execution duration", () => {
   withRunnerFixture((fixture_) => {
     const result = runWorker(fixture_.directory, fixture_.workerPath, fixture_.id);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /^Worker exit code: 0$/m);
-    assert.match(result.stdout, /^Worker duration ms: \d+$/m);
+    assert.match(result.stdout, /^telemetry worker_exit_code=0$/m);
+    assert.match(result.stdout, /^telemetry worker_duration_ms=\d+$/m);
   });
 });
 
@@ -1077,7 +1083,7 @@ test("task run distinguishes and propagates fake worker exit 3", () => {
   withRunnerFixture((fixture_) => {
     const result = runWorker(fixture_.directory, fixture_.workerPath, fixture_.id);
     assert.equal(result.status, 3);
-    assert.match(result.stdout, /^Worker exit code: 3$/m);
+    assert.match(result.stdout, /^telemetry worker_exit_code=3$/m);
     assert.match(result.stderr, /Worker failed with exit code 3/);
   }, { workerExitCode: 3 });
 });
@@ -1100,26 +1106,145 @@ test("task run rejects a Task not IN_PROGRESS without changes", () => {
   assertRunnerFailureWithoutChanges({ status: "TODO" });
 });
 
-test("task run rejects a missing Prompt without changes", () => {
-  assertRunnerFailureWithoutChanges({ promptCount: 0 });
+test("task run succeeds when the prompts directory has no matching Prompt", () => {
+  withRunnerFixture((fixture_) => {
+    rmSync(path.join(fixture_.directory, ".bcos", "prompts"), { recursive: true });
+    assert.equal(dryRun(fixture_).status, 0);
+  }, { promptCount: 0 });
 });
 
-test("task run rejects multiple Prompts without changes", () => {
-  assertRunnerFailureWithoutChanges({ promptCount: 2 });
+test("task run ignores multiple Prompts", () => {
+  withRunnerFixture((fixture_) => {
+    const result = dryRun(fixture_);
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stdout, /FIXTURE WORKER PROMPT/);
+  }, { promptCount: 2 });
 });
 
-test("task run rejects a Prompt without a delimiter pair without changes", () => {
-  assertRunnerFailureWithoutChanges(undefined, (fixture_) => {
+test("task run ignores a Prompt without a delimiter pair", () => {
+  withRunnerFixture((fixture_) => {
     writeFileSync(path.join(fixture_.directory, ".bcos", "prompts", "T-200-worker-0.md"), "no delimiters\n", "utf8");
+    assert.equal(dryRun(fixture_).status, 0);
   });
 });
 
-test("task run rejects an empty Prompt body without changes", () => {
-  assertRunnerFailureWithoutChanges({ prompt: "   " });
+test("task run ignores an empty Prompt body", () => {
+  withRunnerFixture((fixture_) => assert.equal(dryRun(fixture_).status, 0), { prompt: "   " });
 });
 
 test("task run rejects Context creation failure without changes", () => {
-  assertRunnerFailureWithoutChanges({ items: ["- `missing.txt`"], files: {} });
+  assertRunnerFailureWithoutChanges({
+    items: ["- `.bcos/tasks/T-200-runner.md`", "- `missing.txt`"],
+    files: {},
+  });
+});
+
+function telemetryValues(output) {
+  return Object.fromEntries(output.split(/\r?\n/).flatMap((line) => {
+    const match = /^telemetry ([^=]+)=(.*)$/.exec(line);
+    return match ? [[match[1], match[2]]] : [];
+  }));
+}
+
+const telemetryKeys = [
+  "task_id", "worker_name", "worker_runtime", "context_files", "context_bytes",
+  "context_lines", "context_chars", "context_sha256", "stdin_bytes", "stdin_sha256",
+  "worker_timeout_seconds", "first_worker_response_ms", "worker_duration_ms",
+  "worker_exit_code", "worker_timed_out", "worker_stdout_bytes", "worker_stderr_bytes",
+  "retry_count", "runner_transitions_caused",
+];
+
+test("task run dry-run emits telemetry without process-only fields", () => {
+  withRunnerFixture((fixture_) => {
+    const result = dryRun(fixture_);
+    const values = telemetryValues(result.stdout);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(values.worker_timeout_seconds, "1800");
+    assert.equal(values.worker_timed_out, "false");
+    for (const key of [
+      "first_worker_response_ms", "worker_duration_ms", "worker_exit_code",
+      "worker_stdout_bytes", "worker_stderr_bytes",
+    ]) assert.ok(!(key in values));
+  });
+});
+
+test("task run execution emits exactly the defined runner telemetry keys", () => {
+  withRunnerFixture((fixture_) => {
+    const result = runWorker(fixture_.directory, fixture_.workerPath, fixture_.id);
+    const values = telemetryValues(result.stdout);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(Object.keys(values), telemetryKeys);
+    assert.equal(values.worker_exit_code, "0");
+    assert.equal(values.worker_timed_out, "false");
+    assert.equal(values.retry_count, "0");
+    assert.equal(values.runner_transitions_caused, "0");
+  });
+});
+
+test("task run measures first output from a two-second delayed worker", () => {
+  withRunnerFixture((fixture_) => {
+    const result = runWorker(fixture_.directory, fixture_.workerPath, fixture_.id);
+    const values = telemetryValues(result.stdout);
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(Number(values.first_worker_response_ms) > 1_000);
+    assert.ok(Number(values.worker_duration_ms) >= Number(values.first_worker_response_ms));
+  }, { workerDelay: 2_000 });
+});
+
+test("task run timeout override is reported and marks timed out execution", () => {
+  withRunnerFixture((fixture_) => {
+    const result = runWorker(fixture_.directory, fixture_.workerPath, fixture_.id, "--timeout", "1");
+    const values = telemetryValues(result.stdout);
+    assert.equal(result.status, 1);
+    assert.equal(values.worker_timeout_seconds, "1");
+    assert.equal(values.worker_timed_out, "true");
+  }, { workerDelay: 2_000 });
+});
+
+test("task run dry-run and execution report identical context and stdin hashes", () => {
+  withRunnerFixture((fixture_) => {
+    const dryValues = telemetryValues(dryRun(fixture_).stdout);
+    const runValues = telemetryValues(
+      runWorker(fixture_.directory, fixture_.workerPath, fixture_.id).stdout,
+    );
+    assert.equal(runValues.context_sha256, dryValues.context_sha256);
+    assert.equal(runValues.stdin_sha256, dryValues.stdin_sha256);
+  });
+});
+
+test("task run rejects a Read List missing its own Task file without changes", () => {
+  assertRunnerFailureWithoutChanges({ items: ["- `one.txt`"] });
+});
+
+test("task run explains that the Task file is missing from the Read List", () => {
+  withRunnerFixture((fixture_) => {
+    const result = dryRun(fixture_);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Read List is missing its Task file: .*T-200-runner\.md/);
+  }, { items: ["- `one.txt`"] });
+});
+
+test("task run preamble is invariant outside its three value positions", () => {
+  const inputs = [];
+  for (const id of ["T-201", "T-202"]) {
+    withRunnerFixture((fixture_) => {
+      assert.equal(runWorker(fixture_.directory, fixture_.workerPath, fixture_.id).status, 0);
+      inputs.push(readFileSync(path.join(fixture_.directory, "received.txt"), "utf8")
+        .split("\n\n--- CONTEXT PACKAGE ---\n")[0]
+        .replace(id, "<id>")
+        .replace("codex", "<worker>")
+        .replace(new RegExp(`\\.bcos[\\\\/]reports[\\\\/]${id}-runner\\.md`), "<report>"));
+    }, { id });
+  }
+  assert.equal(inputs[0], inputs[1]);
+});
+
+test("task run does not write telemetry into .bcos", () => {
+  withRunnerFixture((fixture_) => {
+    const before = bcosSnapshot(fixture_.directory);
+    assert.equal(runWorker(fixture_.directory, fixture_.workerPath, fixture_.id).status, 0);
+    assert.deepEqual(bcosSnapshot(fixture_.directory), before);
+  });
 });
 
 test("task run rejects unsupported workers without changes", () => {
