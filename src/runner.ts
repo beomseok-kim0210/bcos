@@ -123,7 +123,12 @@ function prepareRun(taskId: string, options: RunWorkerOptions): PreparedRun {
   }
 
   const reportPath = path.join(".bcos", "reports", taskNames[0]);
-  const stdin = `${buildPreamble(taskId, options.worker, reportPath)}\n\n--- CONTEXT PACKAGE ---\n${contextPackage.output}`;
+  const attempt = Number(frontmatterValue(taskContent, "attempt"));
+  const reviewPath = path.join(rootDirectory, ".bcos", "reviews", taskNames[0]);
+  const previousReview = attempt >= 2 && existsSync(reviewPath)
+    ? `\n\n--- REVIEW OF PREVIOUS ATTEMPT ---\n${readFileSync(reviewPath, "utf8")}`
+    : "";
+  const stdin = `${buildPreamble(taskId, options.worker, reportPath)}\n\n--- CONTEXT PACKAGE ---\n${contextPackage.output}${previousReview}`;
   const workerCommand = findWorkerCommand(rootDirectory, options.workerCommand);
   return {
     command: process.execPath,

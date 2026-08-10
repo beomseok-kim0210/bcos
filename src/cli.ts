@@ -290,6 +290,35 @@ function approveTask(): void {
   persistTransition(taskSet, taskId, "DONE", updatedTask, event, timestamp);
 }
 
+function requestChangesTask(): void {
+  const taskId = process.argv[4];
+  const { actorRole, actorId } = actorArguments();
+  const taskSet = readTaskSet(taskId);
+  const { bcosDirectory, target } = taskSet;
+  if (frontmatterValue(target.content, "status") !== "IMPLEMENTED") fail(`Task ${taskId} is not IMPLEMENTED`);
+  if (actorRole !== "reviewer" && actorRole !== "human") fail("Only reviewer or human may request changes");
+  const currentAttempt = Number(frontmatterValue(target.content, "attempt"));
+  if (!Number.isInteger(currentAttempt) || currentAttempt < 1) fail(`Task ${taskId} has an invalid attempt`);
+  const reviewPath = path.join(bcosDirectory, "reviews", taskSet.matchingName);
+  const heading = new RegExp(`^## Attempt ${currentAttempt} — .+ — CHANGES_REQUESTED[ \\t]*\\r?$`, "m");
+  if (!existsReview(reviewPath, heading)) fail(`Changes-requested Review for Task ${taskId} attempt ${currentAttempt} is missing`);
+  const submitterId = submittedActor(bcosDirectory, taskId, currentAttempt);
+  if (!submitterId) fail(`Submit event for Task ${taskId} attempt ${currentAttempt} is missing`);
+  if (submitterId === actorId) fail("The submitting actor cannot request changes on the same attempt");
+  const attempt = currentAttempt + 1;
+  const timestamp = new Date().toISOString();
+  const updatedTask = replaceFrontmatterValue(replaceFrontmatterValue(
+    replaceFrontmatterValue(target.content, "status", "IN_PROGRESS"), "attempt", String(attempt)), "updated", timestamp);
+  persistTransition(taskSet, taskId, "IN_PROGRESS", updatedTask, {
+    ts: timestamp, event: "TASK_CHANGES_REQUESTED", task: taskId, attempt,
+    actor_role: actorRole, actor_id: actorId, from: "IMPLEMENTED", to: "IN_PROGRESS",
+  }, timestamp);
+}
+
+function existsReview(filePath: string, heading: RegExp): boolean {
+  try { return heading.test(readFileSync(filePath, "utf8")); } catch { return false; }
+}
+
 function contextTask(): void {
   const taskId = process.argv[4];
   if (!taskId) fail("Task id is required");
@@ -342,7 +371,8 @@ function runTask(): void {
 function executeTask(): void {
   const taskId = process.argv[4];
   const args = process.argv.slice(5);
-  const valued = new Set(["--worker", "--actor-id", "--timeout", "--worker-command", "--verify-command"]);
+  const valued = new Set(["--worker", "--actor-id", "--timeout", "--worker-command", "--verify-command",
+    "--reviewer", "--reviewer-actor-id", "--max-review-cycles", "--reviewer-command"]);
   const parsed = new Map<string, string>();
   for (let index = 0; index < args.length; index += 1) {
     const option = args[index];
@@ -354,7 +384,7 @@ function executeTask(): void {
       }
       parsed.set(option, args[index + 1]);
       index += 1;
-    } else if (option !== "--verify-only") {
+    } else if (option !== "--verify-only" && option !== "--review") {
       console.error(`Unknown task execute option: ${option}`);
       executeWorkflow(undefined, { verifyOnly: args.includes("--verify-only") })
         .then((code) => { process.exitCode = code; });
@@ -368,6 +398,11 @@ function executeTask(): void {
     workerCommand: parsed.get("--worker-command"),
     verifyCommand: parsed.get("--verify-command"),
     verifyOnly: args.includes("--verify-only"),
+    review: args.includes("--review"),
+    reviewer: parsed.get("--reviewer"),
+    reviewerActorId: parsed.get("--reviewer-actor-id"),
+    maxReviewCycles: parsed.has("--max-review-cycles") ? Number(parsed.get("--max-review-cycles")) : undefined,
+    reviewerCommand: parsed.get("--reviewer-command"),
   }).then((code) => { process.exitCode = code; });
 }
 
@@ -377,6 +412,8 @@ if (argument === "task" && process.argv[3] === "start") {
   submitTask();
 } else if (argument === "task" && process.argv[3] === "approve") {
   approveTask();
+} else if (argument === "task" && process.argv[3] === "request-changes") {
+  requestChangesTask();
 } else if (argument === "task" && process.argv[3] === "context") {
   contextTask();
 } else if (argument === "task" && process.argv[3] === "run") {
@@ -386,7 +423,7 @@ if (argument === "task" && process.argv[3] === "start") {
 } else if (argument === "--version") {
   console.log(packageJson.version);
 } else if (argument === "--help") {
-  console.log("Usage: bcos [--version | --help | task <start|submit|approve|context|run|execute> <id>]");
+  console.log("Usage: bcos [--version | --help | task <start|submit|approve|request-changes|context|run|execute> <id>]");
 } else {
   console.error(`Unknown argument: ${argument ?? "(none)"}`);
   process.exitCode = 1;

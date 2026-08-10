@@ -126,6 +126,11 @@ function runApprove(directory, actorId = "reviewer-a", actorRole = "reviewer", t
   );
 }
 
+function runRequestChanges(directory, actorId = "reviewer-a", actorRole = "reviewer") {
+  return spawnSync(process.execPath, [cli, "task", "request-changes", "T-001",
+    "--actor-role", actorRole, "--actor-id", actorId], { cwd: directory, encoding: "utf8" });
+}
+
 function threeFiles(directory) {
   return [
     readFileSync(path.join(directory, ".bcos", "tasks", "T-001-test-task.md"), "utf8"),
@@ -679,6 +684,64 @@ test("task approve rejects the worker role without changes", () => withFixture((
   assert.equal(runApprove(directory, "reviewer-a", "worker").status, 1);
   assert.deepEqual(bcosSnapshot(directory), before);
 }, approveTaskFixture, attemptOneSubmitted));
+
+const changesFixture = [{ id: "T-001", status: "IMPLEMENTED", body: requiredBody, attempt: 1,
+  review: reviewContent(1, "CHANGES_REQUESTED") }];
+
+test("task request-changes returns IMPLEMENTED to IN_PROGRESS and increments attempt", () => withFixture((directory) => {
+  const result = runRequestChanges(directory);
+  const task = threeFiles(directory)[0];
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(task, /^status: IN_PROGRESS$/m);
+  assert.match(task, /^attempt: 2$/m);
+}, changesFixture, attemptOneSubmitted));
+
+test("task request-changes appends its RFC event", () => withFixture((directory) => {
+  assert.equal(runRequestChanges(directory).status, 0);
+  const event = JSON.parse(threeFiles(directory)[1].trim().split(/\r?\n/).at(-1));
+  assert.deepEqual({ ...event, ts: "ignored" }, { ts: "ignored", event: "TASK_CHANGES_REQUESTED",
+    task: "T-001", attempt: 2, actor_role: "reviewer", actor_id: "reviewer-a",
+    from: "IMPLEMENTED", to: "IN_PROGRESS" });
+}, changesFixture, attemptOneSubmitted));
+
+test("task request-changes recalculates state", () => withFixture((directory) => {
+  assert.equal(runRequestChanges(directory).status, 0);
+  const state = JSON.parse(threeFiles(directory)[2]);
+  assert.equal(state.current_task, "T-001");
+  assert.equal(state.counts.IN_PROGRESS, 1);
+  assert.equal(state.counts.IMPLEMENTED, 0);
+}, changesFixture, attemptOneSubmitted));
+
+test("task request-changes requires a current matching Review", () => {
+  for (const review of [undefined, reviewContent(1, "APPROVED"), reviewContent(1, "BLOCKED")]) {
+    withFixture((directory) => {
+      const before = bcosSnapshot(directory);
+      assert.equal(runRequestChanges(directory).status, 1);
+      assert.deepEqual(bcosSnapshot(directory), before);
+    }, [{ id: "T-001", status: "IMPLEMENTED", body: requiredBody, attempt: 1, review }], attemptOneSubmitted);
+  }
+});
+
+test("task request-changes enforces separation of duties", () => withFixture((directory) => {
+  const before = bcosSnapshot(directory);
+  assert.equal(runRequestChanges(directory, "worker-a").status, 1);
+  assert.deepEqual(bcosSnapshot(directory), before);
+}, changesFixture, attemptOneSubmitted));
+
+test("task request-changes rejects wrong state", () => withFixture((directory) => {
+  const before = bcosSnapshot(directory);
+  assert.equal(runRequestChanges(directory).status, 1);
+  assert.deepEqual(bcosSnapshot(directory), before);
+}, [{ id: "T-001", status: "IN_PROGRESS", body: requiredBody, attempt: 1,
+  review: reviewContent(1, "CHANGES_REQUESTED") }], attemptOneSubmitted));
+
+test("task request-changes rejects unauthorized role", () => withFixture((directory) => {
+  const before = bcosSnapshot(directory);
+  assert.equal(runRequestChanges(directory, "reviewer-a", "worker").status, 1);
+  assert.deepEqual(bcosSnapshot(directory), before);
+}, changesFixture, attemptOneSubmitted));
+
+test("help advertises task request-changes", () => assert.match(run("--help").stdout, /request-changes/));
 
 test("task context prints the package header and footer without changing .bcos", () => {
   withContextFixture((directory) => {
@@ -1337,27 +1400,39 @@ function workflowFixture({ status = "TODO", attempt = 0, report = false, scripts
   if (report) writeFileSync(path.join(bcosDirectory, "reports", taskName), "## Attempt 1 — fixture\n", "utf8");
   const workerPath = path.join(directory, "fake-worker.js");
   writeFileSync(workerPath, `
-import { mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-process.stdin.resume();
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", chunk => { input += chunk; });
 process.stdin.on("end", () => {
   if (process.env.WORKER_REPORT !== "no") {
     const report = path.join(process.cwd(), ".bcos", "reports", "T-300-workflow.md");
     mkdirSync(path.dirname(report), { recursive: true });
-    writeFileSync(report, "## Attempt 1 — fixture\\n", "utf8");
+    const task = readFileSync(path.join(process.cwd(), ".bcos", "tasks", "T-300-workflow.md"), "utf8");
+    const attempt = /^attempt:\\s*(\\d+)/m.exec(task)?.[1];
+    appendFileSync(report, "## Attempt " + attempt + " — fixture\\n", "utf8");
   }
+  const countPath = "worker-count.txt";
+  const count = existsSync(countPath) ? Number(readFileSync(countPath, "utf8")) + 1 : 1;
+  writeFileSync(countPath, String(count), "utf8"); writeFileSync("worker-input-" + count + ".txt", input, "utf8");
+  writeFileSync("worker-ran.txt", "yes", "utf8");
   console.log("worker-session:" + process.env.BCOS_WORKER_SESSION);
   setTimeout(() => { process.exitCode = Number(process.env.WORKER_EXIT || 0); }, Number(process.env.WORKER_DELAY || 0));
 });
 `, "utf8");
   const verifierPath = path.join(directory, "fake-verifier.js");
   writeFileSync(verifierPath, `
-import { writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 console.log("fixture-verifier-stdout");
 console.error("fixture-verifier-stderr");
 writeFileSync(path.join(process.cwd(), "verification-ran.txt"), process.cwd(), "utf8");
-process.exitCode = Number(process.env.VERIFY_EXIT || 0);
+const countPath = path.join(process.cwd(), "verification-count.txt");
+const count = existsSync(countPath) ? Number(readFileSync(countPath, "utf8")) + 1 : 1;
+writeFileSync(countPath, String(count), "utf8");
+const sequence = (process.env.VERIFY_SEQUENCE || String(process.env.VERIFY_EXIT || 0)).split(",");
+process.exitCode = Number(sequence[Math.min(count - 1, sequence.length - 1)]);
 `, "utf8");
   const pathRoot = path.join(directory, "fixture-path");
   const npmPath = path.join(pathRoot, "node_modules", "npm", "bin");
@@ -1366,7 +1441,31 @@ process.exitCode = Number(process.env.VERIFY_EXIT || 0);
 import { writeFileSync } from "node:fs";
 writeFileSync("npm-test-ran.txt", process.argv.slice(2).join(","), "utf8");
 `, "utf8");
-  return { directory, id, taskName, workerPath, verifierPath, pathRoot };
+  const reviewerPath = path.join(directory, "fake-reviewer.js");
+  writeFileSync(reviewerPath, `
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+let input = "";
+process.stdin.setEncoding("utf8"); process.stdin.on("data", chunk => { input += chunk; });
+process.stdin.on("end", () => setTimeout(() => {
+  const countPath = path.join(process.cwd(), "reviewer-count.txt");
+  const count = existsSync(countPath) ? Number(readFileSync(countPath, "utf8")) + 1 : 1;
+  writeFileSync(countPath, String(count), "utf8"); writeFileSync("reviewer-input-" + count + ".txt", input, "utf8");
+  writeFileSync("reviewer-cwd.txt", process.cwd(), "utf8");
+  console.log("fake-reviewer-stdout"); console.error("fake-reviewer-stderr");
+  const attempt = Number(/^  attempt:\\s*(\\d+)/m.exec(input)?.[1]);
+  const sequence = (process.env.REVIEW_SEQUENCE || "APPROVED").split(",");
+  const verdict = sequence[Math.min(count - 1, sequence.length - 1)];
+  if (verdict !== "NONE") {
+    const relative = /^  review:\\s*(.+)$/m.exec(input)?.[1].trim();
+    const review = path.join(process.cwd(), ...relative.split(/[\\\\/]+/));
+    const previous = existsSync(review) ? readFileSync(review, "utf8") : "---\\ntask: T-300\\n---\\n";
+    writeFileSync(review, previous + "\\n## Attempt " + attempt + " — 2026-08-10T00:00:00Z — " + verdict + "\\n\\n### Verdict\\n" + verdict + "\\n", "utf8");
+  }
+  process.exitCode = Number(process.env.REVIEW_EXIT || 0);
+}, Number(process.env.REVIEW_DELAY || 0)));
+`, "utf8");
+  return { directory, id, taskName, workerPath, verifierPath, reviewerPath, pathRoot };
 }
 
 function runExecute(fixture_, extra = [], environment = {}) {
@@ -1374,6 +1473,11 @@ function runExecute(fixture_, extra = [], environment = {}) {
     cli, "task", "execute", fixture_.id, "--worker", "codex", "--actor-id", "workflow-actor",
     "--worker-command", fixture_.workerPath, "--verify-command", fixture_.verifierPath, ...extra,
   ], { cwd: fixture_.directory, encoding: "utf8", timeout: 8_000, env: { ...process.env, ...environment } });
+}
+
+function runReviewExecute(fixture_, extra = [], environment = {}) {
+  return runExecute(fixture_, ["--review", "--reviewer", "claude", "--reviewer-actor-id", "reviewer-a",
+    "--reviewer-command", fixture_.reviewerPath, ...extra], environment);
 }
 
 function withWorkflowFixture(callback, options) {
@@ -1582,3 +1686,120 @@ test("task execute telemetry uses logical command names and no fixture path", ()
 test("help advertises task execute", () => {
   assert.match(run("--help").stdout, /execute/);
 });
+
+test("task execute without review preserves the T-010 stopping point", () => withWorkflowFixture((fixture_) => {
+  const result = runExecute(fixture_);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(path.join(fixture_.directory, "reviewer-count.txt")), false);
+  assert.ok(!("reviewer_name" in telemetryValues(result.stdout)));
+}));
+
+test("review execution approves and reaches DONE", () => withWorkflowFixture((fixture_) => {
+  const result = runReviewExecute(fixture_);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(readFileSync(path.join(fixture_.directory, ".bcos", "tasks", fixture_.taskName), "utf8"), /^status: DONE$/m);
+  assert.deepEqual(workflowEvents(fixture_).map(event => event.event), ["TASK_STARTED", "TASK_SUBMITTED", "TASK_APPROVED"]);
+}));
+
+test("review approval uses the reviewer actor id", () => withWorkflowFixture((fixture_) => {
+  assert.equal(runReviewExecute(fixture_).status, 0);
+  assert.equal(workflowEvents(fixture_).at(-1).actor_id, "reviewer-a");
+}));
+
+test("reviewer receives identifiers and deterministic instructions", () => withWorkflowFixture((fixture_) => {
+  assert.equal(runReviewExecute(fixture_).status, 0);
+  const input = readFileSync(path.join(fixture_.directory, "reviewer-input-1.txt"), "utf8");
+  for (const pattern of [/task:\s+T-300/, /attempt:\s+1/, /reviewer:\s+claude/,
+    /Report를 신뢰하지 마라/, /테스트를 다시 실행하지 마라/, /증거 없는 완료 주장은 CHANGES_REQUESTED/,
+    /git 명령을 실행하지 마라/, /bcos 명령을 실행하지 마라/, /구현을 수정하지 마라/, /테스트를 수정하지 마라/]) assert.match(input, pattern);
+}));
+
+test("reviewer receives host verification evidence and one Context Package", () => withWorkflowFixture((fixture_) => {
+  assert.equal(runReviewExecute(fixture_).status, 0);
+  const input = readFileSync(path.join(fixture_.directory, "reviewer-input-1.txt"), "utf8");
+  assert.match(input, /command:\s+custom-verifier/); assert.match(input, /exit code:\s+0/); assert.match(input, /duration:\s+\d+ ms/);
+  assert.equal(input.match(/=== BCOS CONTEXT PACKAGE v0\.1 ===/g)?.length, 1);
+  assert.doesNotMatch(input, /^\s*(?:review_)?(?:started|completed).*2026/m);
+}));
+
+test("reviewer runs at repository root and forwards output", () => withWorkflowFixture((fixture_) => {
+  const result = runReviewExecute(fixture_);
+  assert.equal(readFileSync(path.join(fixture_.directory, "reviewer-cwd.txt"), "utf8"), fixture_.directory);
+  assert.match(result.stdout, /fake-reviewer-stdout/); assert.match(result.stderr, /fake-reviewer-stderr/);
+}));
+
+test("reviewer nonzero escalates without a verdict transition", () => withWorkflowFixture((fixture_) => {
+  const result = runReviewExecute(fixture_, [], { REVIEW_EXIT: "3" });
+  assert.equal(result.status, 1); assert.equal(telemetryValues(result.stdout).workflow_exit_reason, "reviewer_failed");
+  assert.deepEqual(workflowEvents(fixture_).map(event => event.event), ["TASK_STARTED", "TASK_SUBMITTED"]);
+}));
+
+test("missing reviewer verdict escalates unreadable", () => withWorkflowFixture((fixture_) => {
+  const result = runReviewExecute(fixture_, [], { REVIEW_SEQUENCE: "NONE" });
+  assert.equal(result.status, 1); assert.equal(telemetryValues(result.stdout).review_verdict, "unreadable");
+  assert.equal(telemetryValues(result.stdout).workflow_exit_reason, "verdict_unreadable");
+}));
+
+test("BLOCKED reviewer verdict escalates unreadable", () => withWorkflowFixture((fixture_) => {
+  const result = runReviewExecute(fixture_, [], { REVIEW_SEQUENCE: "BLOCKED" });
+  assert.equal(result.status, 1); assert.equal(telemetryValues(result.stdout).workflow_exit_reason, "verdict_unreadable");
+}));
+
+test("reviewer timeout escalates", () => withWorkflowFixture((fixture_) => {
+  const result = runReviewExecute(fixture_, ["--timeout", "1"], { REVIEW_DELAY: "2000" });
+  assert.equal(result.status, 1); assert.equal(telemetryValues(result.stdout).human_escalation_reason, "environment");
+}));
+
+test("review rework loop hands feedback back and then approves", () => withWorkflowFixture((fixture_) => {
+  const result = runReviewExecute(fixture_, [], { REVIEW_SEQUENCE: "CHANGES_REQUESTED,APPROVED" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(workflowEvents(fixture_).map(event => event.event), ["TASK_STARTED", "TASK_SUBMITTED",
+    "TASK_CHANGES_REQUESTED", "TASK_SUBMITTED", "TASK_APPROVED"]);
+  assert.match(readFileSync(path.join(fixture_.directory, "worker-input-2.txt"), "utf8"), /--- REVIEW OF PREVIOUS ATTEMPT ---/);
+}));
+
+test("review rework telemetry reflects actual invocations", () => withWorkflowFixture((fixture_) => {
+  const values = telemetryValues(runReviewExecute(fixture_, [], { REVIEW_SEQUENCE: "CHANGES_REQUESTED,APPROVED" }).stdout);
+  assert.equal(values.review_cycle, "2"); assert.equal(values.reviewer_invocations, "2");
+  assert.equal(values.rework_invocations, "1"); assert.equal(values.rework_attempt, "2");
+  assert.equal(values.feedback_handoff_count, "1"); assert.equal(values.approval_transition_caused, "true");
+  assert.equal(values.lifecycle_transitions_caused, "5");
+}));
+
+test("rework verification failure does not resubmit", () => withWorkflowFixture((fixture_) => {
+  const result = runReviewExecute(fixture_, [], { REVIEW_SEQUENCE: "CHANGES_REQUESTED", VERIFY_SEQUENCE: "0,4" });
+  assert.equal(result.status, 1); assert.equal(telemetryValues(result.stdout).workflow_exit_reason, "verification");
+  assert.deepEqual(workflowEvents(fixture_).map(event => event.event), ["TASK_STARTED", "TASK_SUBMITTED", "TASK_CHANGES_REQUESTED"]);
+}));
+
+test("review cycle limit defaults to two and escalates at the bound", () => withWorkflowFixture((fixture_) => {
+  const result = runReviewExecute(fixture_, [], { REVIEW_SEQUENCE: "CHANGES_REQUESTED,CHANGES_REQUESTED" });
+  assert.equal(result.status, 1); assert.equal(telemetryValues(result.stdout).workflow_exit_reason, "review_cycles_exhausted");
+  assert.equal(telemetryValues(result.stdout).reviewer_invocations, "2");
+}));
+
+test("review rejects invalid max-review-cycles", () => withWorkflowFixture((fixture_) => {
+  for (const value of ["0", "-1", "1.5", "text"]) assert.equal(runReviewExecute(fixture_, ["--max-review-cycles", value]).status, 1);
+}));
+
+test("review rejects unsupported reviewer", () => withWorkflowFixture((fixture_) => {
+  const result = runExecute(fixture_, ["--review", "--reviewer", "codex", "--reviewer-actor-id", "reviewer-a", "--reviewer-command", fixture_.reviewerPath]);
+  assert.equal(result.status, 1); assert.equal(telemetryValues(result.stdout).workflow_exit_reason, "protocol");
+}));
+
+test("review requires distinct reviewer actor", () => withWorkflowFixture((fixture_) => {
+  const result = runExecute(fixture_, ["--review", "--reviewer", "claude", "--reviewer-actor-id", "workflow-actor", "--reviewer-command", fixture_.reviewerPath]);
+  assert.equal(result.status, 1); assert.match(result.stderr, /must differ/);
+}));
+
+test("review rejects missing reviewer command path", () => withWorkflowFixture((fixture_) => {
+  const result = runExecute(fixture_, ["--review", "--reviewer", "claude", "--reviewer-actor-id", "reviewer-a", "--reviewer-command", "missing.js"]);
+  assert.equal(result.status, 1); assert.match(result.stderr, /does not exist/);
+}));
+
+test("human escalation output contains actionable state without fixture root", () => withWorkflowFixture((fixture_) => {
+  const result = runReviewExecute(fixture_, [], { REVIEW_SEQUENCE: "NONE" });
+  assert.match(result.stderr, /Stopped at:/); assert.match(result.stderr, /Task state: IMPLEMENTED/);
+  assert.match(result.stderr, /Last verdict: unreadable/); assert.match(result.stderr, /Review: \.bcos/);
+  assert.match(result.stderr, /Next action:/); assert.doesNotMatch(result.stderr, new RegExp(fixture_.directory.replaceAll("\\", "\\\\")));
+}));

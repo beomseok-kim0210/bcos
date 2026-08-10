@@ -253,6 +253,33 @@ T-010은 단가를 코드에 박지 말고 값과 함께 출처를 남긴다.
 
 ## 공개 지표와의 관계
 
+## 12. Reviewer Orchestration Metrics
+
+이 필드들은 `task execute --review` 한 번의 실행 중 관측하며 파일에는 기록하지 않는다.
+`--review`가 없으면 출력하지 않는다. `review_started_at`은 이벤트가 아니라 실행 중
+관측값이므로 기존의 blocked `review_start_time`을 대체하지 않는다. 계산 필드는 없다.
+
+| key | 단위 | 출처 | 가용성 |
+|---|---|---|---|
+| `reviewer_name` | 문자열 | `--reviewer` 값 | T-011 |
+| `reviewer_runtime` | 문자열 | reviewer 실행 형태 | T-011 |
+| `reviewer_duration_ms` | ms | reviewer 프로세스 | T-011 |
+| `reviewer_exit_code` | 정수 | reviewer 프로세스 | T-011 |
+| `review_started_at` | RFC 3339 | Orchestrator 실행 중 시각 | T-011 |
+| `review_completed_at` | RFC 3339 | Orchestrator 실행 중 시각 | T-011 |
+| `review_verdict` | 판정 또는 `unreadable` | Review Attempt heading | T-011 |
+| `review_cycle` | 건 | 실제 review 반복 | T-011 |
+| `reviewer_invocations` | 건 | reviewer 실행 횟수 | T-011 |
+| `rework_invocations` | 건 | worker 재작업 실행 횟수 | T-011 |
+| `rework_attempt` | 정수 | 마지막 재작업 attempt | T-011 |
+| `feedback_handoff_count` | 건 | Review를 worker에 전달한 횟수 | T-011 |
+| `approval_transition_caused` | boolean | approve 실행 여부 | T-011 |
+| `human_escalation_reason` | 분류 문자열 | 사람에게 넘긴 경우 | T-011 |
+
+`rework_count`는 `TASK_CHANGES_REQUESTED` 이벤트가 생겨 더 이상 blocked가 아니다.
+`review_findings_*`는 Review 산문 파싱이 필요하므로 manual이고, `review_start_time`은
+`REVIEW_STARTED` 이벤트가 없어 계속 blocked다.
+
 용어를 맞추되 **BCOS 안에서 계산하지 않는다.**
 
 | 공개 지표 | 대응하는 Raw Data | BCOS가 계산하는가 |
