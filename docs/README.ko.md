@@ -41,9 +41,10 @@ BCOS는 이 반복된 결함에서 출발했다. 그래서 목표가 "AI를 더 
 `actor_id`는 해당 시도를 제출한 `actor_id`와 달라야 한다. 구현한 쪽이 스스로 완료를
 선언할 수 있으면 리뷰 단계가 형식만 남기 때문이다.
 
-`start`부터 `submit`까지는 이제 `task execute` 한 명령으로 이어진다. **다만 그
-이후 — Review 실행, verdict 판단, 재작업, `approve`, commit — 은 전부 사람이 한다.**
-나머지 네 전이도 아직 명령이 없다.
+`start`부터 `approve`까지가 이제 `task execute --review` 한 명령으로 이어진다.
+Reviewer가 자동으로 실행되고 판정에 따라 승인하거나 작업을 되돌린다.
+**다만 판정을 읽지 못하면 절대 승인하지 않고 사람에게 넘긴다.**
+Task 설계와 commit은 여전히 사람이 한다.
 
 ## ClawDev와 무엇이 다른가
 
@@ -115,13 +116,28 @@ Worker가 되기도 한다. 세션에는 기억을 남기지 않으므로 언제
   `BCOS_WORKER_SESSION`을 찍고 `task execute`가 그것을 보면 거부한다. 별도로
   Orchestrator는 아무것도 하기 전에 빈 프로세스를 한 번 띄워본다 — 자식 생성이 막혀
   있으면 거기서 멈추며 Task 파일·이벤트 로그·worker 어느 것도 건드리지 않는다
+- `bcos task request-changes <id> --actor-role <role> --actor-id <id>` — RFC-001이
+  규정한 `IMPLEMENTED → IN_PROGRESS` 전이. G4·G5로 보호되고 `TASK_CHANGES_REQUESTED`를
+  남긴다. 현재 attempt의 Review 판정이 `CHANGES_REQUESTED`여야 하고, 되돌아가면서
+  attempt가 올라간다 — 그래서 **`attempt ≥ 2`는 재작업이 있었다는 뜻이다.**
+  **일곱 전이 중 넷이 명령이 됐다**
+- `task execute --review --reviewer claude --reviewer-actor-id <id>` — submit 뒤에
+  reviewer를 실행하고 판정에 따라 움직인다. `APPROVED`면 승인하고,
+  `CHANGES_REQUESTED`면 작업을 되돌린 뒤 worker·검증·리뷰를 다시 돈다.
+  **reviewer actor는 worker actor와 달라야 하며 시작 전에 검사한다**
+- **판정을 읽지 못하면 절대 승인하지 않는다.** 판정 불가·`BLOCKED`·reviewer 실패·
+  cycle 소진·재검증 실패는 전부 멈추고 **어디서 멈췄는지·Task 상태·마지막 판정·
+  Review 경로·사람이 할 일**을 출력한다. cycle 기본값은 2다
+- 재작업은 Review를 worker에게 되돌려 준다. **두 번째 attempt부터 이전 Review 전문이
+  worker 입력에 붙는다.** 대화 기록도, 저장소 재탐색도, 손으로 쓴 프롬프트도 없다 —
+  Task 계약과 `AGENTS.md`, 결정론적 산출물이 인수인계의 전부다
 - 상태 전이 테스트는 임시 디렉터리에서만 실행되며 저장소의 실제 `.bcos/`를 건드리지 않는다
 - 모든 작업에 대해 Report, Review, Benchmark 기록을 남긴다
 
 ## 아직 구현하지 않은 기능
 
-일곱 전이 중 셋이 자동화됐다. **핵심 사이클은 완성됐지만** 재작업이 생기면
-`request-changes` 전이를 아직 손으로 기록해야 하고, `block`·`unblock`도 명령이 없다.
+일곱 전이 중 넷이 자동화됐다 — `start`·`submit`·`approve`·`request-changes`.
+`block`·`unblock`은 아직 명령이 없다.
 
 `actor_id`는 자기 신고 값이므로 SoD는 신뢰 환경을 전제한다. 다른 문자열을 넣으면
 통과한다. 인증은 프로토콜 `0.1`의 알려진 한계이며 별도 RFC의 대상이다.
@@ -142,22 +158,30 @@ T-010이 이 문제에 답했지만 감지로 답한 것은 아니다. worker가
 더 좁은 경우를 막는다.
 
 **지원하는 worker는 `codex` 하나뿐이다.** 모델을 바꾸는 것은 아직 불가능하고
-토큰·비용도 측정하지 않는다. Telemetry는 stdout 전용이라 실행 창을 닫으면 사라진다.
-**Report가 스스로 실패를 선언해도 `submit`은 통과한다** — 가드가 Report의 존재만
-검사하고 내용은 보지 않기 때문이다.
+토큰·비용도 측정하지 않는다.
 
-**`IMPLEMENTED`까지가 자동이고 그 이후는 전부 사람이다.** Review 실행·verdict 판단·
-재작업 지시·`approve`·commit이 남아 있다. **`task execute`로 실제 Codex를 돌려본 적도
-아직 없다** — T-010 자신도 그 명령이 없던 시점에 구현됐다.
+**Report가 스스로 실패를 선언해도 `submit`은 통과한다** — 가드가 Report의 존재만
+검사하고 내용은 보지 않기 때문이다. 달라진 것은 그 뒤에 자동 Reviewer가 서고,
+RFC-001이 **증거 없는 완료 주장을 `CHANGES_REQUESTED`로 판정하라고 요구한다는** 점이다.
+
+**이제 한 명령이 Task를 `TODO`에서 `DONE`까지 끌고 갈 수 있다.** Task 설계와 commit은
+여전히 사람이 하고, 실행을 시작할지 결정하는 것도 사람이다.
+
+**다만 `task execute --review`를 실제 Claude reviewer로 돌려본 적은 아직 없다.**
+검증은 전부 가짜 reviewer로 했고, T-011 자신의 Review도 사람이 했다.
+
+**그리고 실행 중인 작업을 들여다볼 방법이 없다.** telemetry는 stdout에만 나오고,
+무슨 일이 있었는지 BCOS에게 다시 물어볼 명령이 없다. T-011 실행이 그것을 드러냈다 —
+성공했는데 성공한 줄 몰랐다.
 
 Task를 만들거나 목록을 보는 명령, 새 프로젝트에 `.bcos/` 구조를 만드는 `init`,
 상태를 조회하는 `status`와 인덱스를 다시 만드는 `reindex`도 아직 없다.
 
 구현 시점은 약속하지 않는다. 필요가 확인된 순서대로 만든다.
 
-## T-001부터 T-010까지
+## T-001부터 T-011까지
 
-지금까지 열 개의 작업이 프로토콜 전 과정을 통과했다.
+지금까지 열한 개의 작업이 프로토콜 전 과정을 통과했다.
 
 | | 한 일 | AC | 테스트 |
 |---|---|---:|---:|
@@ -171,6 +195,7 @@ Task를 만들거나 목록을 보는 명령, 새 프로젝트에 `.bcos/` 구�
 | **T-008** | `task run` — 조립한 입력을 Worker stdin으로 전달 | 46/46 | 90/90 |
 | **T-009** | 손으로 쓰던 Worker Prompt 제거 + Telemetry 정의 | 62/62 | 99/99 |
 | **T-010** | `task execute` — start·run·검증·submit을 한 명령으로 | 87/87 | 129/129 |
+| **T-011** | reviewer 자동 실행·판정 처리·재작업 loop | 94/94 | 156/156 |
 
 세 전이 작업은 자동화한 대상을 직접 측정했다. 전이 한 건을 완료하는 데 사람이 편집해야
 하는 파일이 **3개에서 0개로** 바뀌었고, 수동 단계는 `start`가 6→1, `submit`이 5→1,
@@ -200,9 +225,17 @@ T-010은 사람이 입력하는 명령을 **4개에서 1개로** 바꿨다. `tas
 검증기가 **실행되면 마커 파일을 남기도록** 만들어, "실행되지 않았다"를 결과가 아니라
 흔적으로 확인했다 — 중첩 거부와 probe 거부 경로에서 마커가 하나도 생기지 않았다.
 
-열 작업 모두 한 번의 시도로 승인됐고, 범위 이탈과 과설계 위반은 0건이었다.
+**T-011은 BCOS가 스스로 끌고 간 첫 작업이다.** `task execute` 한 번이 start·worker
+실행·host 검증·submit을 전부 수행했다. 사람이 친 BCOS 명령은 **하나**였다.
 
-다만 이 수치들을 생산성 향상률로 환산하지는 않는다. 열 작업은 성격이 전부 다르고
+그 실행에서 worker는 또 자기 샌드박스 안에서 테스트를 돌리지 못했다 — **세 작업
+연속이다.** worker는 그 사실을 Report에 적고 완료를 주장하지 않았다. 그런데 host에서
+돌린 결과는 **156개 전부 통과**였고, 그것이 submit을 정당화했다. **host 검증을 둔
+이유가 바로 이 상황이다.**
+
+열한 작업 모두 한 번의 시도로 승인됐고, 범위 이탈과 과설계 위반은 0건이었다.
+
+다만 이 수치들을 생산성 향상률로 환산하지는 않는다. 열한 작업은 성격이 전부 다르고
 비교군이 없다. 위 단계 수는 관찰된 절대값일 뿐이다.
 
 ## 직접 실행해 보기
@@ -266,23 +299,24 @@ src/                  CLI 구현
 | [ADR-002](decisions/ADR-002-storage.md) | SQLite 대신 텍스트 파일을 쓰는 이유 |
 | [ADR-003](decisions/ADR-003-task-centric-workers.md) | 역할을 Task에 두는 이유 |
 | [Git Convention](git-convention.md) | 커밋 규약 |
-| [Telemetry](benchmarks/TELEMETRY.md) | 세 arm 공통 측정 계약. 필드 84개 |
+| [Telemetry](benchmarks/TELEMETRY.md) | 세 arm 공통 측정 계약. 필드 112개 |
 
 ## 앞으로의 방향
 
-핵심 세 전이, Context 생성, Worker 실행, 프롬프트 제거, workflow 묶기까지 끝났다.
+핵심 세 전이, Context 생성, Worker 실행, 프롬프트 제거, workflow 묶기,
+reviewer·재작업 loop까지 끝났다.
 
 | | |
 |---|---|
-| **T-011** Reviewer / Rework Orchestration | reviewer 자동 실행, verdict 처리, feedback 전달, 승인까지 loop |
 | **T-012** Model Adapter | 토큰·비용 수집. 지금 `N/A`인 필드를 실제 값으로 |
 | **T-013** Multi-model Worker Switching | 두 번째 worker. 이것이 있어야 "모델 전환"이 말이 된다 |
 | **T-014** Benchmark Harness | Telemetry 저장과 공정성 6문제 해결. arm 비교의 전제 |
 | **T-015** Benchmark Report | 여기서 처음으로 나눗셈을 허용한다 |
 
-**T-011이 먼저인 이유는 마지막 두 작업이 찾아낸 것 때문이다** — worker는 자기를
-검증하지 못하고, 그렇게 적힌 Report도 `submit`을 통과한다. host 검증이 절반을 막았고,
-verdict를 읽고 재작업을 도는 나머지 절반이 T-011이다.
+그 앞에 **관측 가능성**이 있다. T-011이 해결한 게 아니라 드러낸 문제다. 실행은
+성공했고 세션이 끝난 뒤에도 계속 돌아 exit 0으로 끝났는데, **무슨 일이 있었는지 BCOS에게
+물어볼 방법이 없었다.** telemetry는 stdout에만 나온다.
+**자동화하는 것과 지켜볼 수 있는 것은 다른 문제이고**, 지금까지는 앞의 것만 했다.
 
 `request-changes`를 비롯한 나머지 전이는 그 뒤에 채운다.
 
