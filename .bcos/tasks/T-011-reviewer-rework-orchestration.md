@@ -2,10 +2,10 @@
 protocol: "0.1"
 id: T-011
 title: Run the reviewer, act on the verdict, and loop until approval
-status: TODO
-attempt: 0
+status: DONE
+attempt: 1
 created: 2026-08-07T06:20:00Z
-updated: 2026-08-07T06:20:00Z
+updated: 2026-08-10T02:53:09.896Z
 ---
 
 ## Objective
