@@ -152,6 +152,21 @@ Implemented and verified:
   review is appended to the worker's input. **No conversation history, no re-exploration,
   no hand-written prompt** — the task contract, `AGENTS.md`, and the deterministic
   artifacts are the whole handoff
+- **Every workflow execution leaves a record in `.bcos/runs/`.** One small JSON file per
+  run, named by an execution id that carries a millisecond timestamp, so sorting filenames
+  is sorting by time. It holds the stage each step reached, when it started and last
+  changed, and how it ended — and nothing else: no absolute path, no command line, no
+  prompt, no context, no captured output
+- `bcos task status <id>` — reads the latest run for a task and prints the execution id,
+  attempt, workflow status, stage results, timings, exit reason, and the last lifecycle
+  event. `--execution <id>` selects a specific run. It writes nothing
+- **A run that BCOS did not see finish stays `running`.** It is never rewritten to
+  `failed`, and `interrupted` and `unknown` are never stored, because those would be
+  guesses. The reading command says `Completed: not observed` instead — it does not claim
+  the process is alive either
+- **The run record never owns lifecycle state.** A task can be `IMPLEMENTED` while its
+  last execution says `failed`; both are true about different things. Task state stays in
+  `tasks/*.md`, and the recorder writes to neither `events.jsonl` nor `state.json`
 - Lifecycle guards checked **before any write**, so a rejected transition leaves every
   file untouched — verified across eleven failure paths. `task context` writes nothing
   at all, and a rejected package emits zero bytes to stdout
@@ -170,9 +185,9 @@ Not implemented. Do not expect these to work yet.
   unverified still passes, because the check is that a report exists. What changed is that
   an automated reviewer now runs, and RFC-001 requires it to refuse a completion claim
   with no evidence behind it
-- Any way to watch a run in progress or recover its telemetry afterwards — the fields go
-  to stdout and are gone when the window closes, and there is no `status` or `inspect`
-  command to ask what happened
+- Carrying a verification failure back to the worker — a failed run leaves the task
+  `IN_PROGRESS`, but a plain resume tells the worker nothing about what failed, so it
+  cannot act on it. Review feedback has that path; verification failure does not
 - `bcos task request-changes`, `bcos task block`, `bcos task unblock`
 - `bcos task create`, `bcos task list`
 - `bcos init`, `bcos status`, `bcos reindex`
@@ -206,17 +221,20 @@ command itself being run inside a worker.
 
 ## Verified Baselines
 
-Eleven tasks have completed the full protocol cycle. These are **baselines, not improvements.**
+Twelve tasks have completed the full protocol cycle. These are **baselines, not improvements.**
 
-| | T-001 | T-002 | T-003 | T-005 | T-004 | T-006 | T-007 | T-008 | T-009 | T-010 | T-011 |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Acceptance Criteria | 9/9 | 11/11 | 15/15 | 18/18 | 16/16 | 24/24 | 32/32 | 46/46 | 62/62 | 87/87 | 94/94 |
-| Tests | 3/3 | 3/3 | 11/11 | 23/23 | 31/31 | 46/46 | 66/66 | 90/90 | 99/99 | 129/129 | 156/156 |
-| Scope violations | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| Ponytail violations | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| Runtime dependencies | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| Attempt | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
-| Rework | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | **1** | **1** | 0 |
+| | T-003 | T-005 | T-004 | T-006 | T-007 | T-008 | T-009 | T-010 | T-011 | T-012 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Acceptance Criteria | 15/15 | 18/18 | 16/16 | 24/24 | 32/32 | 46/46 | 62/62 | 87/87 | 94/94 | 87/87 |
+| Tests | 11/11 | 23/23 | 31/31 | 46/46 | 66/66 | 90/90 | 99/99 | 129/129 | 156/156 | 186/186 |
+| Scope violations | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Ponytail violations | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Runtime dependencies | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Attempt | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
+| Rework | 0 | 0 | 0 | 0 | 0 | 0 | **1** | **1** | 0 | 0 |
+
+T-001 and T-002 are omitted from the table for width; both were 9/9 and 11/11 with 3/3
+tests and no rework.
 
 The last two tasks needed rework, and both times for the same reason: the worker could not
 run the test suite inside its own sandbox, so the host run was the first real check.
@@ -318,6 +336,7 @@ Full records: [T-001](docs/benchmarks/T-001-project-scaffold.md) ·
 [T-009](docs/benchmarks/T-009-prompt-builder.md) ·
 [T-010](docs/benchmarks/T-010-workflow-orchestrator-poc.md) ·
 [T-011](docs/benchmarks/T-011-reviewer-rework-orchestration.md) ·
+[T-012](docs/benchmarks/T-012-workflow-observability.md) ·
 [Telemetry field definitions](docs/benchmarks/TELEMETRY.md)
 
 ## Quick Start
@@ -391,20 +410,24 @@ tests/                Tests
 
 Core CLI commands → automated lifecycle transitions → context package generation →
 worker execution → prompt elimination → workflow orchestration → reviewer and rework
-orchestration — **done.** What follows:
+orchestration → execution observability — **done.** What follows:
 
 | | |
 |---|---|
-| **T-012** Model Adapter | Token and cost collection, so the fields that read `N/A` today hold measurements |
-| **T-013** Multi-model Worker Switching | A second worker, which is what makes "switch models" mean anything |
-| **T-014** Benchmark Harness | Persist telemetry and answer the six fairness questions before comparing arms |
-| **T-015** Benchmark Report | Where division is finally allowed |
+| **Verification Failure Feedback** | Carry the failing evidence into the next worker resume, so a failed verification can actually be acted on |
+| **Model Adapter** | Token and cost collection, so the fields that read `N/A` today hold measurements |
+| **Multi-model Worker Switching** | A second worker, which is what makes "switch models" mean anything |
+| **Benchmark Harness** | Answer the six fairness questions before comparing arms |
+| **Benchmark Report** | Where division is finally allowed |
 
-Ahead of those sits observability, which T-011 exposed rather than solved. Its run
-succeeded, kept running after the session that started it ended, and exited 0 — but there
-was no way to ask BCOS what had happened. Telemetry goes to stdout and nothing else.
-**Automating a thing and being able to watch it are different problems**, and only the
-first one has been worked on.
+T-012 closed the observability gap T-011 exposed: every run now leaves a record and one
+command reads it. What it did not close is the other half — when host verification fails,
+the task correctly stays `IN_PROGRESS`, but resuming tells the worker nothing about what
+failed. Review feedback has a path back to the worker; verification failure does not.
+That gap is what the next task should take.
+
+T-012's own first run is not in the record, because it started from a build that predated
+the recorder. **The first workflow observable end to end will be the next one.**
 
 Stages and entry conditions: [docs/vision.md](docs/vision.md)
 

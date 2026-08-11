@@ -131,6 +131,19 @@ Worker가 되기도 한다. 세션에는 기억을 남기지 않으므로 언제
 - 재작업은 Review를 worker에게 되돌려 준다. **두 번째 attempt부터 이전 Review 전문이
   worker 입력에 붙는다.** 대화 기록도, 저장소 재탐색도, 손으로 쓴 프롬프트도 없다 —
   Task 계약과 `AGENTS.md`, 결정론적 산출물이 인수인계의 전부다
+- **workflow 실행마다 `.bcos/runs/` 에 기록이 남는다.** 실행당 작은 JSON 하나이고,
+  파일명에 밀리초 타임스탬프가 들어가 **정렬이 곧 시간순**이다. 각 단계가 어디까지
+  갔는지·언제 시작하고 마지막으로 바뀌었는지·어떻게 끝났는지만 담는다 —
+  절대경로도, command line도, 프롬프트도, Context도, 출력 전문도 저장하지 않는다
+- `bcos task status <id>` — 그 Task의 최신 실행을 읽어 execution id·attempt·
+  workflow 상태·단계별 결과·시각·종료 사유·마지막 lifecycle 이벤트를 출력한다.
+  `--execution <id>` 로 특정 실행을 본다. **아무것도 쓰지 않는다**
+- **BCOS가 끝을 보지 못한 실행은 `running` 으로 남는다.** 절대 `failed` 로 바꾸지 않고
+  `interrupted`·`unknown` 도 저장하지 않는다 — 그건 추측이기 때문이다. 대신 조회할 때
+  `Completed: not observed` 라고 말한다. **살아 있다고도 주장하지 않는다**
+- **실행 기록은 lifecycle 상태를 소유하지 않는다.** Task가 `IMPLEMENTED` 인데 마지막
+  실행은 `failed` 일 수 있고, 둘 다 서로 다른 것에 대해 참이다. Task 상태는 그대로
+  `tasks/*.md` 에 있고, 기록기는 `events.jsonl` 에도 `state.json` 에도 쓰지 않는다
 - 상태 전이 테스트는 임시 디렉터리에서만 실행되며 저장소의 실제 `.bcos/`를 건드리지 않는다
 - 모든 작업에 대해 Report, Review, Benchmark 기록을 남긴다
 
@@ -170,18 +183,21 @@ RFC-001이 **증거 없는 완료 주장을 `CHANGES_REQUESTED`로 판정하라�
 **다만 `task execute --review`를 실제 Claude reviewer로 돌려본 적은 아직 없다.**
 검증은 전부 가짜 reviewer로 했고, T-011 자신의 Review도 사람이 했다.
 
-**그리고 실행 중인 작업을 들여다볼 방법이 없다.** telemetry는 stdout에만 나오고,
-무슨 일이 있었는지 BCOS에게 다시 물어볼 명령이 없다. T-011 실행이 그것을 드러냈다 —
-성공했는데 성공한 줄 몰랐다.
+**검증 실패를 worker에게 전달하는 통로가 없다.** 검증이 실패하면 Task가
+`IN_PROGRESS` 로 남는 것은 옳지만, 그냥 재개하면 worker는 무엇이 왜 실패했는지
+알지 못한다. Review 피드백에는 그 통로가 있고 검증 실패에는 없다.
+
+**T-012 자신의 최초 실행은 기록에 없다** — 기록 기능이 담기기 전의 빌드로 시작됐기
+때문이다. **전 구간이 관측되는 첫 workflow는 다음 Task가 된다.**
 
 Task를 만들거나 목록을 보는 명령, 새 프로젝트에 `.bcos/` 구조를 만드는 `init`,
 상태를 조회하는 `status`와 인덱스를 다시 만드는 `reindex`도 아직 없다.
 
 구현 시점은 약속하지 않는다. 필요가 확인된 순서대로 만든다.
 
-## T-001부터 T-011까지
+## T-001부터 T-012까지
 
-지금까지 열한 개의 작업이 프로토콜 전 과정을 통과했다.
+지금까지 열두 개의 작업이 프로토콜 전 과정을 통과했다.
 
 | | 한 일 | AC | 테스트 |
 |---|---|---:|---:|
@@ -196,6 +212,7 @@ Task를 만들거나 목록을 보는 명령, 새 프로젝트에 `.bcos/` 구�
 | **T-009** | 손으로 쓰던 Worker Prompt 제거 + Telemetry 정의 | 62/62 | 99/99 |
 | **T-010** | `task execute` — start·run·검증·submit을 한 명령으로 | 87/87 | 129/129 |
 | **T-011** | reviewer 자동 실행·판정 처리·재작업 loop | 94/94 | 156/156 |
+| **T-012** | 실행 기록 저장 + `task status` 조회 | 87/87 | 186/186 |
 
 세 전이 작업은 자동화한 대상을 직접 측정했다. 전이 한 건을 완료하는 데 사람이 편집해야
 하는 파일이 **3개에서 0개로** 바뀌었고, 수동 단계는 `start`가 6→1, `submit`이 5→1,
@@ -233,9 +250,11 @@ T-010은 사람이 입력하는 명령을 **4개에서 1개로** 바꿨다. `tas
 돌린 결과는 **156개 전부 통과**였고, 그것이 submit을 정당화했다. **host 검증을 둔
 이유가 바로 이 상황이다.**
 
-열한 작업 모두 한 번의 시도로 승인됐고, 범위 이탈과 과설계 위반은 0건이었다.
+**T-012는 실행 기록을 남기기 시작했다.** 실행마다 612바이트짜리 기록이 생기고 `task status` 하나로 읽힌다. 강제로 죽여도 `running` 이 유지되고 `interrupted`·`unknown` 을 지어내지 않는다.
 
-다만 이 수치들을 생산성 향상률로 환산하지는 않는다. 열한 작업은 성격이 전부 다르고
+열두 작업 모두 한 번의 시도로 승인됐고, 범위 이탈과 과설계 위반은 0건이었다.
+
+다만 이 수치들을 생산성 향상률로 환산하지는 않는다. 열두 작업은 성격이 전부 다르고
 비교군이 없다. 위 단계 수는 관찰된 절대값일 뿐이다.
 
 ## 직접 실행해 보기
@@ -299,24 +318,24 @@ src/                  CLI 구현
 | [ADR-002](decisions/ADR-002-storage.md) | SQLite 대신 텍스트 파일을 쓰는 이유 |
 | [ADR-003](decisions/ADR-003-task-centric-workers.md) | 역할을 Task에 두는 이유 |
 | [Git Convention](git-convention.md) | 커밋 규약 |
-| [Telemetry](benchmarks/TELEMETRY.md) | 세 arm 공통 측정 계약. 필드 112개 |
+| [Telemetry](benchmarks/TELEMETRY.md) | 세 arm 공통 측정 계약. 필드 118개 |
 
 ## 앞으로의 방향
 
 핵심 세 전이, Context 생성, Worker 실행, 프롬프트 제거, workflow 묶기,
-reviewer·재작업 loop까지 끝났다.
+reviewer·재작업 loop, 실행 관측까지 끝났다.
 
 | | |
 |---|---|
-| **T-012** Model Adapter | 토큰·비용 수집. 지금 `N/A`인 필드를 실제 값으로 |
-| **T-013** Multi-model Worker Switching | 두 번째 worker. 이것이 있어야 "모델 전환"이 말이 된다 |
-| **T-014** Benchmark Harness | Telemetry 저장과 공정성 6문제 해결. arm 비교의 전제 |
-| **T-015** Benchmark Report | 여기서 처음으로 나눗셈을 허용한다 |
+| **검증 실패 피드백** | 실패 증거를 다음 worker 재개 Context로 전달 |
+| **Model Adapter** | 토큰·비용 수집. 지금 `N/A`인 필드를 실제 값으로 |
+| **Multi-model Worker Switching** | 두 번째 worker. 이것이 있어야 "모델 전환"이 말이 된다 |
+| **Benchmark Harness** | 공정성 6문제 해결. arm 비교의 전제 |
+| **Benchmark Report** | 여기서 처음으로 나눗셈을 허용한다 |
 
-그 앞에 **관측 가능성**이 있다. T-011이 해결한 게 아니라 드러낸 문제다. 실행은
-성공했고 세션이 끝난 뒤에도 계속 돌아 exit 0으로 끝났는데, **무슨 일이 있었는지 BCOS에게
-물어볼 방법이 없었다.** telemetry는 stdout에만 나온다.
-**자동화하는 것과 지켜볼 수 있는 것은 다른 문제이고**, 지금까지는 앞의 것만 했다.
+T-012가 관측 가능성의 절반을 닫았다 — 이제 실행마다 기록이 남고 명령 하나로 읽힌다.
+**닫지 못한 나머지 절반이 검증 실패 피드백이다.** 검증이 실패하면 Task는 옳게
+`IN_PROGRESS` 로 남지만, 재개해도 worker는 무엇이 실패했는지 듣지 못한다.
 
 `request-changes`를 비롯한 나머지 전이는 그 뒤에 채운다.
 
