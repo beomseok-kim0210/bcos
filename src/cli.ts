@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { buildContextPackage } from "./context.js";
 import { runCodexWorker, type RunWorkerOptions } from "./runner.js";
 import { executeWorkflow } from "./workflow.js";
+import { readRuns, stageNames } from "./run.js";
 
 const packagePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json");
 const packageJson = JSON.parse(readFileSync(packagePath, "utf8")) as { version: string };
@@ -406,6 +407,47 @@ function executeTask(): void {
   }).then((code) => { process.exitCode = code; });
 }
 
+function statusTask(): void {
+  const taskId = process.argv[4];
+  if (!taskId) fail("Task id is required");
+  const args = process.argv.slice(5);
+  if (args.length !== 0 && (args.length !== 2 || args[0] !== "--execution" || !args[1])) {
+    fail("Usage: bcos task status <id> [--execution <execution-id>]");
+  }
+  const taskSet = readTaskSet(taskId);
+  const taskStatus = frontmatterValue(taskSet.target.content, "status") ?? "unknown";
+  const runs = readRuns(taskId);
+  if (runs.length === 0) {
+    console.log(`Task ${taskId} (${taskStatus}) has no workflow execution records.`);
+    return;
+  }
+  const requested = args[1];
+  const record = requested ? runs.find((item) => item.execution_id === requested) : runs.at(-1);
+  if (!record) fail(`Workflow execution not found: ${requested}`);
+  const events = readFileSync(path.join(taskSet.bcosDirectory, "events.jsonl"), "utf8")
+    .split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((event) => event.task === taskId).sort((left, right) => String(left.ts).localeCompare(String(right.ts)));
+  const lastEvent = events.at(-1);
+  console.log(`Task: ${taskId} (${taskStatus})`);
+  console.log(`Execution: ${record.execution_id}`);
+  console.log(`Attempt: ${record.attempt}`);
+  console.log(`Workflow status: ${record.workflow_status}`);
+  console.log(`Current stage: ${record.current_stage ?? "none"}`);
+  console.log(`Started: ${record.started_at}`);
+  console.log(`Updated: ${record.updated_at}`);
+  console.log(`Completed: ${record.completed_at ?? "not observed"}`);
+  console.log(`Exit reason: ${record.workflow_exit_reason ?? "not observed"}`);
+  console.log(`Last lifecycle event: ${lastEvent ? `${lastEvent.event} at ${lastEvent.ts}` : "none"}`);
+  for (const stage of stageNames) console.log(`Stage ${stage}: ${record.stages[stage]}`);
+  if (record.workflow_status === "running" && Date.now() - Date.parse(record.updated_at) > 60_000) {
+    const age = Math.floor((Date.now() - Date.parse(record.updated_at)) / 1_000);
+    console.log(`Last known: running (${age} seconds since update); BCOS did not observe how this execution ended.`);
+  }
+  if (runs.length > 1) {
+    console.log(`Executions: ${runs.length}; other execution ids: ${runs.filter((item) => item !== record).map((item) => item.execution_id).join(", ")}`);
+  }
+}
+
 if (argument === "task" && process.argv[3] === "start") {
   startTask();
 } else if (argument === "task" && process.argv[3] === "submit") {
@@ -420,10 +462,12 @@ if (argument === "task" && process.argv[3] === "start") {
   runTask();
 } else if (argument === "task" && process.argv[3] === "execute") {
   executeTask();
+} else if (argument === "task" && process.argv[3] === "status") {
+  statusTask();
 } else if (argument === "--version") {
   console.log(packageJson.version);
 } else if (argument === "--help") {
-  console.log("Usage: bcos [--version | --help | task <start|submit|approve|request-changes|context|run|execute> <id>]");
+  console.log("Usage: bcos [--version | --help | task <start|submit|approve|request-changes|context|run|execute|status> <id>]");
 } else {
   console.error(`Unknown argument: ${argument ?? "(none)"}`);
   process.exitCode = 1;

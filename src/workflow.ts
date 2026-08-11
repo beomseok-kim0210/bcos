@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { runCodexWorker } from "./runner.js";
 import { runReviewer, type ReviewResult } from "./reviewer.js";
+import { createRun, finishRun, markStage, updateRun, type RunRecord, type Stage } from "./run.js";
 
 type ExitReason = "success" | "nested_worker" | "permission" | "environment" |
   "protocol" | "worker_nonzero" | "timeout" | "verification" | "unknown" |
@@ -97,9 +98,11 @@ export async function executeWorkflow(taskId: string | undefined, options: Workf
   let reworkAttempt = 0;
   let feedbackHandoffs = 0;
   let approved = false;
+  let run: RunRecord | undefined;
   const nested = process.env.BCOS_WORKER_SESSION !== undefined;
   const finish = (reason: ExitReason, message?: string) => {
     if (message) console.error(message);
+    if (run) finishRun(run, reason === "success", reason);
     const fields: Record<string, string | number | boolean> = {
       workflow_started_at: startedAt,
       workflow_completed_at: new Date().toISOString(),
@@ -110,6 +113,13 @@ export async function executeWorkflow(taskId: string | undefined, options: Workf
       runner_invocations: runners,
       lifecycle_transitions_caused: transitions,
     };
+    if (run) {
+      fields.execution_id = run.execution_id;
+      fields.workflow_status = run.workflow_status;
+      if (run.current_stage) fields.current_stage = run.current_stage;
+      fields.stage_status = run.current_stage ? run.stages[run.current_stage] : "not_started";
+      fields.run_record_path = path.join(".bcos", "runs", `${run.execution_id}.json`);
+    }
     if (verificationCommand) fields.verification_command = verificationCommand;
     if (verificationResult) {
       fields.verification_exit_code = verificationResult.code;
@@ -189,11 +199,18 @@ export async function executeWorkflow(taskId: string | undefined, options: Workf
   const attempt = Number(value(record.content, "attempt"));
   if (options.verifyOnly && status !== "IN_PROGRESS") return finish("protocol", "--verify-only requires an IN_PROGRESS Task");
   if (!options.verifyOnly && status !== "TODO" && status !== "IN_PROGRESS") return finish("protocol", `Task ${taskId} is not TODO or IN_PROGRESS`);
+  run = createRun(taskId, status === "TODO" ? attempt + 1 : attempt,
+    [...(status === "IN_PROGRESS" ? ["start" as Stage] : []), ...(options.verifyOnly ? ["worker" as Stage] : [])]);
+  run.verification_command = verificationCommand;
+  updateRun(run);
   if (!options.verifyOnly && status === "TODO") {
-    if (!lifecycle("start", taskId, options.actorId)) return finish("protocol");
+    markStage(run, "start", "running");
+    if (!lifecycle("start", taskId, options.actorId)) { markStage(run, "start", "failed"); return finish("protocol"); }
+    markStage(run, "start", "success");
     transitions += 1;
   }
   if (!options.verifyOnly) {
+    markStage(run, "worker", "running");
     runners += 1;
     let timedOut = false;
     let code: number;
@@ -203,19 +220,27 @@ export async function executeWorkflow(taskId: string | undefined, options: Workf
         workerCommand: options.workerCommand, onTimeout: () => { timedOut = true; },
       });
     } catch (error) {
+      markStage(run, "worker", "failed");
       return finish("protocol", error instanceof Error ? error.message : String(error));
     }
-    if (code !== 0) return finish(timedOut ? "timeout" : "worker_nonzero");
+    if (code !== 0) { markStage(run, "worker", "failed"); return finish(timedOut ? "timeout" : "worker_nonzero"); }
+    markStage(run, "worker", "success");
   }
   const currentAttempt = status === "TODO" ? attempt + 1 : attempt;
-  if (!hasReport(taskId, record.name, currentAttempt)) return finish("protocol", `Report for Task ${taskId} is missing attempt ${currentAttempt}`);
+  markStage(run, "report_check", "running");
+  if (!hasReport(taskId, record.name, currentAttempt)) { markStage(run, "report_check", "failed"); return finish("protocol", `Report for Task ${taskId} is missing attempt ${currentAttempt}`); }
+  markStage(run, "report_check", "success");
 
+  markStage(run, "verification", "running");
   verificationRuns += 1;
   const result = await verify(command);
   verificationResult = { code: result.code, duration: result.duration };
-  if (result.errorCode) return finish(result.errorCode === "EPERM" ? "permission" : "environment");
-  if (result.code !== 0) return finish("verification");
-  if (!lifecycle("submit", taskId, options.actorId)) return finish("unknown");
+  if (result.errorCode) { markStage(run, "verification", "failed"); return finish(result.errorCode === "EPERM" ? "permission" : "environment"); }
+  if (result.code !== 0) { markStage(run, "verification", "failed"); return finish("verification"); }
+  markStage(run, "verification", "success");
+  markStage(run, "submit", "running");
+  if (!lifecycle("submit", taskId, options.actorId)) { markStage(run, "submit", "failed"); return finish("unknown"); }
+  markStage(run, "submit", "success");
   transitions += 1;
   if (!options.review) return finish("success");
 
@@ -223,39 +248,50 @@ export async function executeWorkflow(taskId: string | undefined, options: Workf
     if (reviewCycle >= maxCycles) return escalate("review_cycles_exhausted", "review cycle limit reached");
     reviewCycle += 1;
     reviewerInvocations += 1;
+    markStage(run, "review", "running");
     try {
       reviewResult = await runReviewer(taskId, options.reviewer!, options.reviewerCommand,
         options.timeoutSeconds ?? 1_800, { command: verificationCommand!, code: verificationResult.code, duration: verificationResult.duration });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return escalate(/permission|EPERM/i.test(message) ? "permission" : "environment", message);
+      markStage(run, "review", "failed"); return escalate(/permission|EPERM/i.test(message) ? "permission" : "environment", message);
     }
-    if (reviewResult.timedOut) return escalate("environment", "reviewer timed out");
-    if (reviewResult.errorCode) return escalate(reviewResult.errorCode === "EPERM" ? "permission" : "environment", "reviewer failed to start");
-    if (reviewResult.code !== 0) return escalate("reviewer_failed", `reviewer exited ${reviewResult.code}`);
-    if (reviewResult.verdict === "unreadable") return escalate("verdict_unreadable", "review verdict is unreadable");
+    if (reviewResult.timedOut) { markStage(run, "review", "failed"); return escalate("environment", "reviewer timed out"); }
+    if (reviewResult.errorCode) { markStage(run, "review", "failed"); return escalate(reviewResult.errorCode === "EPERM" ? "permission" : "environment", "reviewer failed to start"); }
+    if (reviewResult.code !== 0) { markStage(run, "review", "failed"); return escalate("reviewer_failed", `reviewer exited ${reviewResult.code}`); }
+    if (reviewResult.verdict === "unreadable") { markStage(run, "review", "failed"); return escalate("verdict_unreadable", "review verdict is unreadable"); }
+    markStage(run, "review", "success");
     if (reviewResult.verdict === "APPROVED") {
-      if (!lifecycle("approve", taskId, options.reviewerActorId!)) return finish("unknown");
+      markStage(run, "approve", "running");
+      if (!lifecycle("approve", taskId, options.reviewerActorId!)) { markStage(run, "approve", "failed"); return finish("unknown"); }
+      markStage(run, "approve", "success");
       transitions += 1; approved = true;
       return finish("success");
     }
-    if (!lifecycle("request-changes", taskId, options.reviewerActorId!)) return finish("unknown");
+    markStage(run, "request_changes", "running");
+    if (!lifecycle("request-changes", taskId, options.reviewerActorId!)) { markStage(run, "request_changes", "failed"); return finish("unknown"); }
+    markStage(run, "request_changes", "success");
     transitions += 1; feedbackHandoffs += 1; reworkInvocations += 1;
     const changed = taskRecord(taskId);
     reworkAttempt = Number(value(changed.content, "attempt"));
+    run.attempt = reworkAttempt; updateRun(run); markStage(run, "worker", "running");
     let timedOut = false;
     const workerCode = await runCodexWorker(taskId, { worker: options.worker, dryRun: false,
       timeoutSeconds: options.timeoutSeconds, workerCommand: options.workerCommand,
       onTimeout: () => { timedOut = true; } });
     runners += 1;
-    if (workerCode !== 0) return finish(timedOut ? "timeout" : "worker_nonzero");
-    if (!hasReport(taskId, changed.name, reworkAttempt)) return finish("protocol", `Report for Task ${taskId} is missing attempt ${reworkAttempt}`);
+    if (workerCode !== 0) { markStage(run, "worker", "failed"); return finish(timedOut ? "timeout" : "worker_nonzero"); }
+    markStage(run, "worker", "success"); markStage(run, "report_check", "running");
+    if (!hasReport(taskId, changed.name, reworkAttempt)) { markStage(run, "report_check", "failed"); return finish("protocol", `Report for Task ${taskId} is missing attempt ${reworkAttempt}`); }
+    markStage(run, "report_check", "success"); markStage(run, "verification", "running");
     verificationRuns += 1;
     const nextVerification = await verify(command);
     verificationResult = { code: nextVerification.code, duration: nextVerification.duration };
-    if (nextVerification.errorCode) return finish(nextVerification.errorCode === "EPERM" ? "permission" : "environment");
-    if (nextVerification.code !== 0) return escalate("verification", "rework verification failed");
-    if (!lifecycle("submit", taskId, options.actorId)) return finish("unknown");
+    if (nextVerification.errorCode) { markStage(run, "verification", "failed"); return finish(nextVerification.errorCode === "EPERM" ? "permission" : "environment"); }
+    if (nextVerification.code !== 0) { markStage(run, "verification", "failed"); return escalate("verification", "rework verification failed"); }
+    markStage(run, "verification", "success"); markStage(run, "submit", "running");
+    if (!lifecycle("submit", taskId, options.actorId)) { markStage(run, "submit", "failed"); return finish("unknown"); }
+    markStage(run, "submit", "success");
     transitions += 1;
   }
 

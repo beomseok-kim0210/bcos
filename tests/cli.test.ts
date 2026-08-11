@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -1803,3 +1803,213 @@ test("human escalation output contains actionable state without fixture root", (
   assert.match(result.stderr, /Last verdict: unreadable/); assert.match(result.stderr, /Review: \.bcos/);
   assert.match(result.stderr, /Next action:/); assert.doesNotMatch(result.stderr, new RegExp(fixture_.directory.replaceAll("\\", "\\\\")));
 }));
+
+function workflowRunFiles(fixture_) {
+  const directory = path.join(fixture_.directory, ".bcos", "runs");
+  return existsSync(directory) ? readdirSync(directory).filter(name => name.endsWith(".json")).sort() : [];
+}
+
+function workflowRun(fixture_, name = workflowRunFiles(fixture_).at(-1)) {
+  return JSON.parse(readFileSync(path.join(fixture_.directory, ".bcos", "runs", name), "utf8"));
+}
+
+function runStatus(fixture_, ...extra) {
+  return spawnSync(process.execPath, [cli, "task", "status", fixture_.id, ...extra],
+    { cwd: fixture_.directory, encoding: "utf8" });
+}
+
+test("workflow creates one valid execution record with matching id", () => withWorkflowFixture((fixture_) => {
+  assert.equal(runExecute(fixture_).status, 0);
+  const names = workflowRunFiles(fixture_); const record = workflowRun(fixture_);
+  assert.equal(names.length, 1); assert.equal(`${record.execution_id}.json`, names[0]);
+  assert.match(names[0], /^\d{8}T\d{9}Z-[a-f0-9]{8}\.json$/);
+}));
+
+test("two executions create distinct chronologically sortable records and status selects latest", () => withWorkflowFixture((fixture_) => {
+  assert.equal(runExecute(fixture_, ["--verify-only"]).status, 0);
+  const taskPath = path.join(fixture_.directory, ".bcos", "tasks", fixture_.taskName);
+  const body = contextBody([`- \`.bcos/tasks/${fixture_.taskName}\``, "- `package.json`"]);
+  writeFileSync(taskPath, taskContent(fixture_.id, "IN_PROGRESS", body, 1), "utf8");
+  assert.equal(runExecute(fixture_, ["--verify-only"]).status, 0);
+  const names = workflowRunFiles(fixture_); const records = names.map(name => workflowRun(fixture_, name));
+  assert.equal(names.length, 2); assert.notEqual(records[0].execution_id, records[1].execution_id);
+  assert.ok(records[0].started_at <= records[1].started_at);
+  const output = runStatus(fixture_).stdout;
+  assert.match(output, new RegExp(`Execution: ${records[1].execution_id}`)); assert.match(output, /Executions: 2/);
+}, { status: "IN_PROGRESS", attempt: 1, report: true }));
+
+test("successful record contains identity and RFC3339 timestamps", () => withWorkflowFixture((fixture_) => {
+  runExecute(fixture_); const record = workflowRun(fixture_);
+  assert.equal(record.task_id, fixture_.id); assert.equal(record.attempt, 1);
+  assert.equal(new Date(record.started_at).toISOString(), record.started_at);
+  assert.equal(new Date(record.updated_at).toISOString(), record.updated_at);
+}));
+
+test("successful record is completed successfully", () => withWorkflowFixture((fixture_) => {
+  runExecute(fixture_); const record = workflowRun(fixture_);
+  assert.equal(record.workflow_status, "success"); assert.equal(record.workflow_exit_reason, "success");
+  assert.equal(new Date(record.completed_at).toISOString(), record.completed_at);
+}));
+
+test("non-review execution records five successful stages", () => withWorkflowFixture((fixture_) => {
+  runExecute(fixture_); const stages = workflowRun(fixture_).stages;
+  for (const name of ["start", "worker", "report_check", "verification", "submit"]) assert.equal(stages[name], "success");
+}));
+
+test("non-review execution leaves review stages not started", () => withWorkflowFixture((fixture_) => {
+  runExecute(fixture_); const record = workflowRun(fixture_);
+  for (const name of ["review", "approve", "request_changes"]) assert.equal(record.stages[name], "not_started");
+  assert.equal(record.current_stage, "submit");
+}));
+
+test("verify-only marks worker and resumed start skipped", () => withWorkflowFixture((fixture_) => {
+  assert.equal(runExecute(fixture_, ["--verify-only"]).status, 0);
+  const stages = workflowRun(fixture_).stages;
+  assert.equal(stages.worker, "skipped"); assert.equal(stages.start, "skipped");
+}, { status: "IN_PROGRESS", attempt: 1, report: true }));
+
+test("resumed workflow marks start skipped", () => withWorkflowFixture((fixture_) => {
+  runExecute(fixture_); assert.equal(workflowRun(fixture_).stages.start, "skipped");
+}, { status: "IN_PROGRESS", attempt: 1 }));
+
+test("worker failure records failed and leaves verification not started", () => withWorkflowFixture((fixture_) => {
+  runExecute(fixture_, [], { WORKER_EXIT: "3" }); const record = workflowRun(fixture_);
+  assert.equal(record.workflow_status, "failed"); assert.equal(record.stages.worker, "failed");
+  assert.equal(record.stages.verification, "not_started");
+}));
+
+test("worker timeout records timeout exit reason", () => withWorkflowFixture((fixture_) => {
+  runExecute(fixture_, ["--timeout", "1"], { WORKER_DELAY: "2000" });
+  assert.equal(workflowRun(fixture_).workflow_exit_reason, "timeout");
+}));
+
+test("missing report records report check failure", () => withWorkflowFixture((fixture_) => {
+  runExecute(fixture_, [], { WORKER_REPORT: "no" });
+  assert.equal(workflowRun(fixture_).stages.report_check, "failed");
+}));
+
+test("verification failure records failed and leaves submit not started", () => withWorkflowFixture((fixture_) => {
+  runExecute(fixture_, [], { VERIFY_EXIT: "4" }); const record = workflowRun(fixture_);
+  assert.equal(record.stages.verification, "failed"); assert.equal(record.stages.submit, "not_started");
+}));
+
+test("reviewer failure is recorded with its reason", () => withWorkflowFixture((fixture_) => {
+  runReviewExecute(fixture_, [], { REVIEW_EXIT: "3" }); const record = workflowRun(fixture_);
+  assert.equal(record.stages.review, "failed"); assert.equal(record.workflow_exit_reason, "reviewer_failed");
+}));
+
+test("unreadable verdict is recorded", () => withWorkflowFixture((fixture_) => {
+  runReviewExecute(fixture_, [], { REVIEW_SEQUENCE: "NONE" });
+  assert.equal(workflowRun(fixture_).workflow_exit_reason, "verdict_unreadable");
+}));
+
+test("review cycle exhaustion is recorded", () => withWorkflowFixture((fixture_) => {
+  runReviewExecute(fixture_, [], { REVIEW_SEQUENCE: "CHANGES_REQUESTED,CHANGES_REQUESTED" });
+  assert.equal(workflowRun(fixture_).workflow_exit_reason, "review_cycles_exhausted");
+}));
+
+test("approved review records review and approve success", () => withWorkflowFixture((fixture_) => {
+  runReviewExecute(fixture_); const stages = workflowRun(fixture_).stages;
+  assert.equal(stages.review, "success"); assert.equal(stages.approve, "success");
+}));
+
+test("rework retains one execution and updates attempt and stages", () => withWorkflowFixture((fixture_) => {
+  runReviewExecute(fixture_, [], { REVIEW_SEQUENCE: "CHANGES_REQUESTED,APPROVED" });
+  const record = workflowRun(fixture_); assert.equal(workflowRunFiles(fixture_).length, 1);
+  assert.equal(record.attempt, 2); assert.equal(record.stages.request_changes, "success");
+  assert.equal(record.stages.worker, "success");
+}));
+
+test("status reports latest execution fields and lifecycle event", () => withWorkflowFixture((fixture_) => {
+  runExecute(fixture_); const result = runStatus(fixture_);
+  assert.equal(result.status, 0, result.stderr);
+  for (const pattern of [/Task: T-300 \(IMPLEMENTED\)/, /Execution:/, /Attempt: 1/, /Workflow status: success/,
+    /Current stage: submit/, /Started:/, /Updated:/, /Completed:/, /Exit reason: success/,
+    /Last lifecycle event: TASK_SUBMITTED/, /Stage worker: success/, /Stage verification: success/, /Stage review: not_started/]) assert.match(result.stdout, pattern);
+}));
+
+test("status selects a requested execution and rejects a missing one", () => withWorkflowFixture((fixture_) => {
+  runExecute(fixture_); const id = workflowRun(fixture_).execution_id;
+  assert.match(runStatus(fixture_, "--execution", id).stdout, new RegExp(`Execution: ${id}`));
+  assert.equal(runStatus(fixture_, "--execution", "missing").status, 1);
+}));
+
+test("status for a Task without runs succeeds without writing", () => withWorkflowFixture((fixture_) => {
+  const before = bcosSnapshot(fixture_.directory); const result = runStatus(fixture_);
+  assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /no workflow execution records/);
+  assert.deepEqual(bcosSnapshot(fixture_.directory), before);
+}));
+
+test("status rejects a missing Task", () => withWorkflowFixture((fixture_) => {
+  const result = spawnSync(process.execPath, [cli, "task", "status", "T-999"],
+    { cwd: fixture_.directory, encoding: "utf8" });
+  assert.equal(result.status, 1);
+}));
+
+test("status reports stale running records as last known only", () => withWorkflowFixture((fixture_) => {
+  const directory = path.join(fixture_.directory, ".bcos", "runs"); mkdirSync(directory);
+  const id = "20260810T000000000Z-a1b2c3d4";
+  writeFileSync(path.join(directory, `${id}.json`), JSON.stringify({ execution_id: id, task_id: fixture_.id,
+    attempt: 1, started_at: "2026-08-10T00:00:00.000Z", updated_at: "2026-08-10T00:00:00.000Z",
+    workflow_status: "running", current_stage: "worker", stages: Object.fromEntries(
+      ["start", "worker", "report_check", "verification", "submit", "review", "approve", "request_changes"].map(name => [name, name === "worker" ? "running" : "not_started"])) }), "utf8");
+  const output = runStatus(fixture_).stdout; assert.match(output, /Last known: running/);
+  assert.match(output, /did not observe how this execution ended/); assert.doesNotMatch(output, /still alive|is dead/i);
+}));
+
+test("guards create no execution records", () => withWorkflowFixture((fixture_) => {
+  const before = bcosSnapshot(fixture_.directory);
+  assert.equal(runExecute(fixture_, [], { BCOS_WORKER_SESSION: "1" }).status, 1);
+  assert.deepEqual(bcosSnapshot(fixture_.directory), before); assert.equal(workflowRunFiles(fixture_).length, 0);
+}));
+
+test("invalid execute options create no execution records", () => withWorkflowFixture((fixture_) => {
+  const before = bcosSnapshot(fixture_.directory); assert.equal(runExecute(fixture_, ["--unknown"]).status, 1);
+  assert.deepEqual(bcosSnapshot(fixture_.directory), before);
+}));
+
+test("run records contain no Task status or private output fields", () => withWorkflowFixture((fixture_) => {
+  runExecute(fixture_); const text = JSON.stringify(workflowRun(fixture_));
+  assert.doesNotMatch(text, /"status":|FIXTURE WORKER PROMPT|fixture-verifier-stdout|BCOS_WORKER_SESSION|context package/i);
+  assert.equal(workflowRun(fixture_).verification_command, "custom-verifier");
+}));
+
+test("atomic record writes leave no temporary files", () => withWorkflowFixture((fixture_) => {
+  runExecute(fixture_); assert.equal(readdirSync(path.join(fixture_.directory, ".bcos", "runs"))
+    .some(name => name.endsWith(".tmp")), false);
+}));
+
+test("workflow telemetry includes the persisted execution id", () => withWorkflowFixture((fixture_) => {
+  const result = runExecute(fixture_); const values = telemetryValues(result.stdout); const record = workflowRun(fixture_);
+  assert.equal(values.execution_id, record.execution_id); assert.equal(values.workflow_status, "success");
+  assert.equal(values.current_stage, "submit"); assert.match(values.run_record_path, /\.bcos[\\/]runs/);
+}));
+
+test("run records distinguish all stage state vocabulary without zeroes", () => withWorkflowFixture((fixture_) => {
+  runExecute(fixture_, [], { WORKER_EXIT: "3" }); const text = JSON.stringify(workflowRun(fixture_));
+  assert.match(text, /failed/); assert.match(text, /not_started/); assert.doesNotMatch(text, /:0(?:[,}])/);
+}));
+
+test("help advertises task status", () => assert.match(run("--help").stdout, /status/));
+
+test("a killed workflow leaves valid running observation", async () => {
+  const fixture_ = workflowFixture();
+  try {
+    const child = spawn(process.execPath, [cli, "task", "execute", fixture_.id, "--worker", "codex",
+      "--actor-id", "workflow-actor", "--worker-command", fixture_.workerPath,
+      "--verify-command", fixture_.verifierPath], { cwd: fixture_.directory,
+      env: { ...process.env, WORKER_DELAY: "5000" }, stdio: "ignore" });
+    const observedStage = () => {
+      const names = workflowRunFiles(fixture_);
+      if (names.length === 0) return undefined;
+      try { return workflowRun(fixture_, names[0]).current_stage; } catch { return undefined; }
+    };
+    for (let index = 0; index < 50 && observedStage() !== "worker"; index += 1) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    child.kill(); await new Promise(resolve => child.once("close", resolve));
+    const record = workflowRun(fixture_); assert.equal(record.workflow_status, "running");
+    assert.equal(record.completed_at, undefined); assert.equal(record.current_stage, "worker");
+    assert.doesNotMatch(JSON.stringify(record), /interrupted|unknown/);
+  } finally { rmSync(fixture_.directory, { recursive: true, force: true }); }
+});

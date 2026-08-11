@@ -73,6 +73,7 @@ bcos/
 │   ├── tasks/                # 진실 원천 — manager 소유
 │   ├── reports/              # worker 소유
 │   ├── reviews/              # reviewer 소유
+│   ├── runs/                 # workflow 실행 관찰 기록
 │   └── prompts/              # 부트스트랩 전용. CLI 완성 시 삭제
 ├── docs/bootstrap/           # 부트스트랩 전용. CLI 완성 시 삭제
 ├── src/                      # 구현 (worker가 작성)

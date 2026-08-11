@@ -251,6 +251,18 @@ T-010은 단가를 코드에 박지 말고 값과 함께 출처를 남긴다.
 
 ---
 
+## 11.1 Workflow Execution Observability
+
+실행 기록은 `.bcos/runs/`의 저장소 상대 경로에 남으며 Task lifecycle 상태를 소유하지 않는다.
+
+| key | 단위 | 출처 | 가용성 |
+|---|---|---|---|
+| `execution_id` | 문자열 | Orchestrator 실행 식별자 | T-012 |
+| `workflow_status` | `running` \| `success` \| `failed` | 관측된 workflow 상태 | T-012 |
+| `current_stage` | stage 이름 | 마지막으로 진행한 stage | T-012 |
+| `stage_status` | `not_started` \| `skipped` \| `running` \| `success` \| `failed` | stage 경계 관측값 | T-012 |
+| `run_record_path` | 저장소 상대 경로 | `.bcos/runs/<execution-id>.json` | T-012 |
+
 ## 공개 지표와의 관계
 
 ## 12. Reviewer Orchestration Metrics
