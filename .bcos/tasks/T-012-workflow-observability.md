@@ -2,10 +2,10 @@
 protocol: "0.1"
 id: T-012
 title: Record each workflow execution so a finished run can be inspected later
-status: TODO
-attempt: 0
+status: DONE
+attempt: 1
 created: 2026-08-10T03:06:09Z
-updated: 2026-08-10T03:06:09Z
+updated: 2026-08-11T02:08:05.559Z
 ---
 
 ## Objective
