@@ -1,0 +1,24 @@
+{
+  "execution_id": "20260812T045321986Z-2ded4929",
+  "task_id": "T-014",
+  "attempt": 1,
+  "started_at": "2026-08-12T04:53:21.986Z",
+  "updated_at": "2026-08-12T05:01:27.568Z",
+  "workflow_status": "success",
+  "stages": {
+    "start": "success",
+    "worker": "success",
+    "report_check": "success",
+    "verification": "success",
+    "submit": "success",
+    "review": "not_started",
+    "approve": "not_started",
+    "request_changes": "not_started"
+  },
+  "verification_command": "npm-test",
+  "current_stage": "submit",
+  "worker_name": "codex",
+  "worker_version": "0.147.0",
+  "completed_at": "2026-08-12T05:01:27.568Z",
+  "workflow_exit_reason": "success"
+}

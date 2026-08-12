@@ -2,10 +2,10 @@
 protocol: "0.1"
 id: T-014
 title: Hand the previous host verification failure to the next worker automatically
-status: TODO
-attempt: 0
+status: DONE
+attempt: 1
 created: 2026-08-12T01:30:00Z
-updated: 2026-08-12T01:30:00Z
+updated: 2026-08-12T05:37:34.588Z
 ---
 
 # T-014 — Verification Failure Feedback
