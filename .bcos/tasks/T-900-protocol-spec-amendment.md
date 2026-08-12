@@ -2,10 +2,10 @@
 protocol: "0.1"
 id: T-900
 title: Resolve a review verdict by its latest entry so a blocked attempt can be closed after correction
-status: TODO
-attempt: 0
+status: DONE
+attempt: 2
 created: 2026-08-11T07:10:00Z
-updated: 2026-08-11T07:10:00Z
+updated: 2026-08-12T00:17:29.237Z
 ---
 
 # T-900 — Protocol Hotfix: Spec Amendment · BLOCKED Alignment
@@ -120,6 +120,28 @@ approved_by: <human actor_id>
 **JSON schema framework를 만들지 않는다.** Markdown으로 충분하다.
 **필드를 더 늘리지 않는다.** 위가 최소 집합이다.
 
+**구현 — `src/cli.ts`에 함수 하나.** 새 파일도 새 명령도 만들지 않는다.
+
+```ts
+export function effectiveAmendments(taskId: string, root?: string): Amendment[]
+```
+
+`.bcos/amendments/`에서 해당 Task의 amendment를 읽어 **유효한 것만** 돌려준다.
+디렉터리가 없으면 빈 배열이다 — 오류가 아니다.
+
+**유효 판정은 다음 네 가지뿐이다. 그 이상을 판단하지 않는다.**
+
+| 조건 | 불충족 시 |
+|---|---|
+| frontmatter의 `task`가 대상 Task와 일치 | 제외 |
+| `approved_by`가 비어 있지 않다 | 제외 (**Human 승인 없는 amendment는 effective하지 않다**) |
+| `proposed_by` ≠ `approved_by` | 제외 (SoD) |
+| `## Superseded`가 원본 Task에 **실제로 존재하는** AC 번호를 가리킨다 | 제외 |
+
+**scope 확대인지 correction인지는 기계가 판정하지 않는다.**
+그 판단은 Reviewer와 Human의 몫이며, 위 네 조건은 **형식 검증**일 뿐이다.
+**policy engine을 만들지 마라.**
+
 **`proposed_by`와 `approved_by`는 서로 달라야 한다.** Reviewer가 자기 발견을
 자기 권한으로 계약에 반영하면 G5(SoD)의 의미가 약해진다. 이것은 G5의
 형태를 amendment에 그대로 적용한 것이며 새 개념이 아니다.
@@ -192,7 +214,7 @@ Review의 `Criteria Assessment`는 감사 가능한 형태를 유지한다.
 
 **이미 구현과 테스트가 끝난 Task를 다시 worker에게 돌릴 필요가 없다.**
 
-### 8. 유일한 코드 변경 — 판정 해석은 마지막 항목을 본다
+### 8. 코드 변경 — 판정 해석은 마지막 항목을 본다
 
 §7이 같은 attempt에 복수 판정 항목을 허용하는 순간, 현재 구현은 **틀린 답을 준다.**
 
@@ -208,7 +230,8 @@ Review의 `Criteria Assessment`는 감사 가능한 형태를 유지한다.
 `verdict()`는 마지막 항목이 `BLOCKED`이면 `"unreadable"`을 반환한다 —
 workflow가 사람에게 에스컬레이션한다. **T-011 semantics 그대로다.**
 
-**이것이 이 Task의 worker 작업 전부다.**
+**§4의 `effectiveAmendments()`와 이 판정 해석 두 가지가 worker 작업 전부다.**
+두 변경 모두 `src/cli.ts`·`src/reviewer.ts` 안에서 끝난다.
 
 ### 9. RFC 개정 제안 — 이 Task에서 적용하지 않는다
 
@@ -269,7 +292,9 @@ T-013은 worker 재실행이 필요 없으므로 amendment를 Worker Context에 
 - Multi-model Switching · Benchmark Harness · Token/Cost
 - `src/model.ts` · `src/runner.ts` · `src/workflow.ts` · `src/run.ts` · `src/context.ts` 수정
 - **`docs/` 수정** — RFC 개정은 이 Task의 worker 작업이 아니다 (§9)
-- **`.bcos/amendments/` 디렉터리·파일 생성** — 첫 amendment는 manager·Human이 만든다
+- **저장소 `.bcos/amendments/`에 실제 amendment 생성** — 첫 amendment(T-013 A001)는
+  manager·Human이 만든다. 테스트는 임시 fixture 저장소 안에서만 만든다
+- **scope 확대 여부를 기계 판정하는 로직** — 형식 검증 네 가지만 (§4)
 - 새 CLI 명령 (`amend-spec` · `accept-amendment` 등)
 - 새 이벤트 (`TASK_SPEC_AMENDED` 등) · `state.json` 스키마 변경
 - 새 상태 · 새 전이 (`IMPLEMENTED → BLOCKED` 포함)
@@ -299,13 +324,24 @@ T-013은 worker 재실행이 필요 없으므로 amendment를 Worker Context에 
 13. Review 파일이 없거나 해당 attempt 항목이 없으면 이전과 동일하게 실패/`unreadable`이다.
 14. 판정 헤딩 형식(`## Attempt <n> — <ts> — <VERDICT>`)은 **변경하지 않는다**.
 
-### B. 경계 (15–22)
+### B. Amendment 형식 검증 (15a–15h)
+
+15a. `effectiveAmendments(taskId)`가 `src/cli.ts`에서 export된다.
+15b. `.bcos/amendments/`가 없으면 **빈 배열**을 반환한다 — 오류가 아니다.
+15c. 네 조건을 모두 만족하는 amendment가 반환된다.
+15d. `approved_by`가 비어 있으면 **제외**된다 — Human 승인 없는 amendment는 effective하지 않다.
+15e. `proposed_by === approved_by`이면 **제외**된다.
+15f. frontmatter의 `task`가 대상과 다르면 **제외**된다.
+15g. `## Superseded`가 원본 Task에 없는 AC 번호를 가리키면 **제외**된다.
+15h. **원본 Task 파일을 읽기만 하고 쓰지 않는다** — 호출 전후 Task 파일 해시가 동일하다.
+
+### B'. 경계 (15–22)
 
 15. 변경된 source file은 `src/cli.ts` · `src/reviewer.ts` **둘뿐**이다.
 16. **새 source file 0개.**
 17. `src/model.ts` · `src/runner.ts` · `src/workflow.ts` · `src/run.ts` · `src/context.ts` **무변경**.
 18. `docs/` 아래 **무변경**.
-19. `.bcos/` 아래 새 디렉터리·파일 **0개** (Report 제외).
+19. **저장소** `.bcos/` 아래 새 디렉터리·파일 **0개** (Report 제외). 테스트 fixture는 임시 디렉터리 안에서만 만든다.
 20. 새 CLI 명령 **0개** — `--help` 출력 불변.
 21. 새 이벤트 종류 **0개** · `state.json` 스키마 **불변**.
 22. `class` · `interface` · registry · plugin · DI **0건**.
@@ -333,14 +369,14 @@ T-013은 worker 재실행이 필요 없으므로 amendment를 Worker Context에 
 ### E. 품질 (37–43)
 
 37. `npm run build` exit 0.
-38. `npm test` **실패 0건**, 총 **227개 이상**.
+38. `npm test` **실패 0건**, 총 **234개 이상**.
 39. 테스트 삭제·skip **0건**.
 40. `dependencies` 0개 · `devDependencies` 2개.
-41. `src/cli.ts` **490줄 이하** · `src/reviewer.ts` **95줄 이하**.
+41. `src/cli.ts` **520줄 이하** · `src/reviewer.ts` **95줄 이하**.
 42. 출력·아티팩트에 사용자 홈 절대 경로 **0건**.
 43. 부분 쓰기 **0건** — 기존 temp→rename 경로를 그대로 쓴다 (새 쓰기 경로 없음).
 
-**총 43개.**
+**총 51개** (43 + 15a–15h 8개).
 
 ## Expected Files
 
@@ -370,8 +406,10 @@ T-013은 worker 재실행이 필요 없으므로 amendment를 Worker Context에 
 
 ## Test Requirements
 
-**현재 219개.** 신규 **8개 이상**, 목표 총 **227개**, AC 하한 **227개**.
+**현재 219개.** 신규 **15개 이상**, 목표 총 **234개**, AC 하한 **234개**.
 (하한이 목표를 넘지 않는다.)
+
+**판정 해석 (8)**
 
 | # | 신규 테스트 |
 |---|---|
@@ -383,6 +421,18 @@ T-013은 worker 재실행이 필요 없으므로 amendment를 Worker Context에 
 | 6 | 다른 attempt의 항목이 해석에 영향을 주지 않는다 |
 | 7 | `verdict()`가 마지막 항목을 반환한다 |
 | 8 | 마지막이 `BLOCKED`면 `verdict()`가 `unreadable`이다 |
+
+**Amendment 형식 검증 (7)** — 전부 임시 fixture 저장소에서 수행한다
+
+| # | 신규 테스트 |
+|---|---|
+| 9 | amendments 디렉터리가 없으면 빈 배열 |
+| 10 | 네 조건을 만족하는 amendment가 반환된다 |
+| 11 | `approved_by`가 비면 제외 |
+| 12 | `proposed_by === approved_by`이면 제외 |
+| 13 | `task`가 다르면 제외 |
+| 14 | 존재하지 않는 AC를 가리키면 제외 |
+| 15 | 호출 전후 원본 Task 파일이 바이트 단위로 동일하다 |
 
 **회귀** — 기존 219개 전부 통과. 단일 항목 Review의 동작이 이전과 동일해야 한다.
 

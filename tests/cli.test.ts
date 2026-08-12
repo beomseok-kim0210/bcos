@@ -12,7 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { modelCommand, runModel } from "../dist/model.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -550,6 +550,18 @@ ${verdict}
 `;
 }
 
+function reviewEntries(...entries) {
+  return `---
+task: T-001
+---
+${entries.map(([attempt, verdict], index) => `
+## Attempt ${attempt} — 2026-08-04T00:00:0${index}Z — ${verdict}
+
+### Verdict
+${verdict}
+`).join("")}`;
+}
+
 function submittedEvent(attempt, actorId) {
   return `${JSON.stringify({
     ts: "2026-08-04T00:00:00.000Z",
@@ -641,6 +653,28 @@ test("task approve rejects BLOCKED and other verdicts without changes", () => {
   }
 });
 
+test("task approve accepts APPROVED appended after BLOCKED", () => withFixture((directory) => {
+  assert.equal(runApprove(directory).status, 0);
+}, [{ id: "T-001", status: "IMPLEMENTED", body: requiredBody, attempt: 1,
+  review: reviewEntries([1, "BLOCKED"], [1, "APPROVED"]) }], attemptOneSubmitted));
+
+test("task approve rejects BLOCKED appended after APPROVED", () => withFixture((directory) => {
+  const before = bcosSnapshot(directory);
+  assert.equal(runApprove(directory).status, 1);
+  assert.deepEqual(bcosSnapshot(directory), before);
+}, [{ id: "T-001", status: "IMPLEMENTED", body: requiredBody, attempt: 1,
+  review: reviewEntries([1, "APPROVED"], [1, "BLOCKED"]) }], attemptOneSubmitted));
+
+test("task approve rejects CHANGES_REQUESTED appended after APPROVED", () => withFixture((directory) => {
+  assert.equal(runApprove(directory).status, 1);
+}, [{ id: "T-001", status: "IMPLEMENTED", body: requiredBody, attempt: 1,
+  review: reviewEntries([1, "APPROVED"], [1, "CHANGES_REQUESTED"]) }], attemptOneSubmitted));
+
+test("task approve ignores verdicts from other attempts", () => withFixture((directory) => {
+  assert.equal(runApprove(directory).status, 0);
+}, [{ id: "T-001", status: "IMPLEMENTED", body: requiredBody, attempt: 1,
+  review: reviewEntries([1, "APPROVED"], [2, "BLOCKED"]) }], attemptOneSubmitted));
+
 test("task approve rejects the current attempt submitter without changes", () => withFixture((directory) => {
   const before = bcosSnapshot(directory);
   assert.equal(runApprove(directory, "worker-a").status, 1);
@@ -721,6 +755,139 @@ test("task request-changes requires a current matching Review", () => {
       assert.deepEqual(bcosSnapshot(directory), before);
     }, [{ id: "T-001", status: "IMPLEMENTED", body: requiredBody, attempt: 1, review }], attemptOneSubmitted);
   }
+});
+
+test("task request-changes accepts CHANGES_REQUESTED appended after BLOCKED", () => withFixture((directory) => {
+  assert.equal(runRequestChanges(directory).status, 0);
+}, [{ id: "T-001", status: "IMPLEMENTED", body: requiredBody, attempt: 1,
+  review: reviewEntries([1, "BLOCKED"], [1, "CHANGES_REQUESTED"]) }], attemptOneSubmitted));
+
+test("task request-changes rejects APPROVED appended after CHANGES_REQUESTED", () => withFixture((directory) => {
+  assert.equal(runRequestChanges(directory).status, 1);
+}, [{ id: "T-001", status: "IMPLEMENTED", body: requiredBody, attempt: 1,
+  review: reviewEntries([1, "CHANGES_REQUESTED"], [1, "APPROVED"]) }], attemptOneSubmitted));
+
+function amendmentContent({ task = "T-001", proposedBy = "manager-a", approvedBy = "human-a",
+  superseded = "- AC 1" } = {}) {
+  return `---
+protocol: "0.1"
+task: ${task}
+amendment: A001
+attempt: 1
+created: 2026-08-11T00:00:00Z
+proposed_by: ${proposedBy}
+approved_by: ${approvedBy}
+---
+
+## Superseded
+${superseded}
+
+## Original
+Original.
+
+## Corrected
+Corrected.
+
+## Reason
+Conflict.
+
+## Evidence
+Fixture.
+`;
+}
+
+function effectiveAmendments(directory) {
+  const script = `process.argv[2] = "--version";
+const { effectiveAmendments } = await import(${JSON.stringify(pathToFileURL(cli).href)});
+console.log("RESULT=" + JSON.stringify(effectiveAmendments("T-001", ${JSON.stringify(directory)})));`;
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
+    cwd: directory, encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(/^RESULT=(.+)$/m.exec(result.stdout)?.[1]);
+}
+
+function withAmendmentFixture(callback, amendment, body = requiredBody) {
+  withFixture((directory) => {
+    if (amendment !== undefined) {
+      const amendmentsDirectory = path.join(directory, ".bcos", "amendments");
+      mkdirSync(amendmentsDirectory);
+      writeFileSync(path.join(amendmentsDirectory, "T-001-A001.md"), amendment, "utf8");
+    }
+    callback(directory);
+  }, [{ id: "T-001", status: "TODO", body }]);
+}
+
+test("effectiveAmendments returns empty when the amendments directory is absent", () => {
+  withAmendmentFixture((directory) => assert.deepEqual(effectiveAmendments(directory), []));
+});
+
+test("effectiveAmendments returns an amendment satisfying all four conditions", () => {
+  withAmendmentFixture((directory) => {
+    const amendments = effectiveAmendments(directory);
+    assert.equal(amendments.length, 1);
+    assert.equal(amendments[0].approvedBy, "human-a");
+  }, amendmentContent());
+});
+
+test("effectiveAmendments excludes an amendment without approved_by", () => {
+  withAmendmentFixture((directory) => assert.deepEqual(effectiveAmendments(directory), []),
+    amendmentContent({ approvedBy: "" }));
+});
+
+test("effectiveAmendments excludes self-approved amendments", () => {
+  withAmendmentFixture((directory) => assert.deepEqual(effectiveAmendments(directory), []),
+    amendmentContent({ proposedBy: "same", approvedBy: "same" }));
+});
+
+test("effectiveAmendments excludes amendments for another Task", () => {
+  withAmendmentFixture((directory) => assert.deepEqual(effectiveAmendments(directory), []),
+    amendmentContent({ task: "T-002" }));
+});
+
+test("effectiveAmendments excludes references to missing Acceptance Criteria", () => {
+  withAmendmentFixture((directory) => assert.deepEqual(effectiveAmendments(directory), []),
+    amendmentContent({ superseded: "- AC 99" }));
+});
+
+test("effectiveAmendments leaves the original Task byte-for-byte unchanged", () => {
+  withAmendmentFixture((directory) => {
+    const taskPath = path.join(directory, ".bcos", "tasks", "T-001-test-task.md");
+    const before = readFileSync(taskPath, "utf8");
+    effectiveAmendments(directory);
+    assert.equal(readFileSync(taskPath, "utf8"), before);
+  }, amendmentContent());
+});
+
+test("effectiveAmendments recognizes criteria after a blank line", () => {
+  const body = requiredBody.replace("## Acceptance Criteria\n1. It starts.",
+    "## Acceptance Criteria\n\n2. It starts.");
+  withAmendmentFixture((directory) => assert.equal(effectiveAmendments(directory).length, 1),
+    amendmentContent({ superseded: "- AC 2" }), body);
+});
+
+test("effectiveAmendments recognizes criteria below a subheading", () => {
+  const body = requiredBody.replace("1. It starts.", "### Core\n\n3. It starts.");
+  withAmendmentFixture((directory) => assert.equal(effectiveAmendments(directory).length, 1),
+    amendmentContent({ superseded: "- AC 3" }), body);
+});
+
+test("effectiveAmendments recognizes the last Acceptance Criterion", () => {
+  const body = requiredBody.replace("1. It starts.", "1. It starts.\n2. It finishes.\n3. It reports.");
+  withAmendmentFixture((directory) => assert.equal(effectiveAmendments(directory).length, 1),
+    amendmentContent({ superseded: "- AC 3" }), body);
+});
+
+test("effectiveAmendments validates every listed Superseded criterion", () => {
+  const body = requiredBody.replace("1. It starts.", "1. It starts.\n2. It finishes.\n3. It reports.");
+  withAmendmentFixture((directory) => assert.equal(effectiveAmendments(directory).length, 1),
+    amendmentContent({ superseded: "- AC 1\n- AC 2\n- AC 3" }), body);
+});
+
+test("effectiveAmendments excludes a missing criterion anywhere in Superseded", () => {
+  const body = requiredBody.replace("1. It starts.", "1. It starts.\n2. It finishes.\n3. It reports.");
+  withAmendmentFixture((directory) => assert.deepEqual(effectiveAmendments(directory), []),
+    amendmentContent({ superseded: "- AC 1\n- AC 99\n- AC 3" }), body);
 });
 
 test("task request-changes enforces separation of duties", () => withFixture((directory) => {
@@ -1744,6 +1911,22 @@ test("missing reviewer verdict escalates unreadable", () => withWorkflowFixture(
 test("BLOCKED reviewer verdict escalates unreadable", () => withWorkflowFixture((fixture_) => {
   const result = runReviewExecute(fixture_, [], { REVIEW_SEQUENCE: "BLOCKED" });
   assert.equal(result.status, 1); assert.equal(telemetryValues(result.stdout).workflow_exit_reason, "verdict_unreadable");
+}));
+
+test("reviewer verdict uses APPROVED appended after BLOCKED", () => withWorkflowFixture((fixture_) => {
+  writeFileSync(path.join(fixture_.directory, ".bcos", "reviews", fixture_.taskName),
+    reviewEntries([1, "BLOCKED"]), "utf8");
+  const result = runReviewExecute(fixture_, [], { REVIEW_SEQUENCE: "APPROVED" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(telemetryValues(result.stdout).review_verdict, "APPROVED");
+}));
+
+test("reviewer verdict treats BLOCKED appended after APPROVED as unreadable", () => withWorkflowFixture((fixture_) => {
+  writeFileSync(path.join(fixture_.directory, ".bcos", "reviews", fixture_.taskName),
+    reviewEntries([1, "APPROVED"]), "utf8");
+  const result = runReviewExecute(fixture_, [], { REVIEW_SEQUENCE: "BLOCKED" });
+  assert.equal(result.status, 1);
+  assert.equal(telemetryValues(result.stdout).review_verdict, "unreadable");
 }));
 
 test("reviewer timeout escalates", () => withWorkflowFixture((fixture_) => {

@@ -53,9 +53,13 @@ ${context}`;
 
 function verdict(reviewPath: string, attempt: number): ReviewResult["verdict"] {
   if (!existsSync(reviewPath)) return "unreadable";
-  const match = new RegExp(`^## Attempt ${attempt} — .+ — (APPROVED|CHANGES_REQUESTED)[ \\t]*\\r?$`, "m")
-    .exec(readFileSync(reviewPath, "utf8"));
-  return match?.[1] as ReviewResult["verdict"] ?? "unreadable";
+  const headings = readFileSync(reviewPath, "utf8").matchAll(new RegExp(
+    `^## Attempt ${attempt} — [^\\r\\n]+ — (APPROVED|CHANGES_REQUESTED|BLOCKED)[ \\t]*\\r?$`,
+    "gm",
+  ));
+  let latest: string | undefined;
+  for (const heading of headings) latest = heading[1];
+  return latest === "APPROVED" || latest === "CHANGES_REQUESTED" ? latest : "unreadable";
 }
 
 export async function runReviewer(taskId: string, reviewer: string, commandOverride: string | undefined, timeoutSeconds: number, evidence: { command: string; code: number; duration: number }): Promise<ReviewResult> {

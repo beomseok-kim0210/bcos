@@ -17,6 +17,8 @@ import { readRuns, stageNames } from "./run.js";
 const packagePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json");
 const packageJson = JSON.parse(readFileSync(packagePath, "utf8")) as { version: string };
 const argument = process.argv[2];
+export type Amendment = { name: string; content: string; task: string; amendment?: string; attempt?: number;
+  created?: string; proposedBy: string; approvedBy: string };
 
 function fail(message: string): never {
   console.error(message);
@@ -27,6 +29,56 @@ function frontmatterValue(content: string, key: string): string | undefined {
   return new RegExp(`^${key}:[ \\t]*([^\\r\\n]*)`, "m").exec(content)?.[1].trim();
 }
 
+function section(content: string, name: string): string {
+  const heading = new RegExp(`^## ${name}[ \\t]*\\r?\\n`, "m").exec(content);
+  if (!heading) return "";
+  const rest = content.slice(heading.index + heading[0].length);
+  const end = /^## /m.exec(rest)?.index;
+  return end === undefined ? rest : rest.slice(0, end);
+}
+
+function lastReviewVerdict(content: string, attempt: number): string | undefined {
+  const headings = content.matchAll(new RegExp(
+    `^## Attempt ${attempt} — [^\\r\\n]+ — (APPROVED|CHANGES_REQUESTED|BLOCKED)[ \\t]*\\r?$`,
+    "gm",
+  ));
+  let verdict: string | undefined; for (const heading of headings) verdict = heading[1];
+  return verdict;
+}
+export function effectiveAmendments(taskId: string, root = process.cwd()): Amendment[] {
+  const tasksDirectory = path.join(root, ".bcos", "tasks");
+  const taskNames = readdirSync(tasksDirectory)
+    .filter((name) => name.startsWith(`${taskId}-`) && name.endsWith(".md"));
+  if (taskNames.length !== 1) return [];
+  const task = readFileSync(path.join(tasksDirectory, taskNames[0]), "utf8");
+  const criteria = section(task, "Acceptance Criteria");
+  const criterionIds = new Set([
+    ...Array.from(criteria.matchAll(/^\s*(\d+[a-z]?)\.[ \t]/gim), (match) => match[1].toLowerCase()),
+    ...Array.from(criteria.matchAll(/^\s*\|\s*(\d+[a-z]?)\s*\|/gim), (match) => match[1].toLowerCase()),
+  ]);
+  const amendmentsDirectory = path.join(root, ".bcos", "amendments");
+  let names: string[];
+  try {
+    names = readdirSync(amendmentsDirectory).filter((name) => name.endsWith(".md"));
+  } catch {
+    return [];
+  }
+  return names.flatMap((name) => {
+    const content = readFileSync(path.join(amendmentsDirectory, name), "utf8");
+    const taskValue = frontmatterValue(content, "task");
+    const proposedBy = frontmatterValue(content, "proposed_by") ?? "";
+    const approvedBy = frontmatterValue(content, "approved_by") ?? "";
+    const superseded = section(content, "Superseded");
+    const references = Array.from(superseded.matchAll(/\bAC[ \t]+(\d+[a-z]?)\b/gi),
+      (match) => match[1].toLowerCase());
+    if (taskValue !== taskId || !approvedBy || proposedBy === approvedBy || references.length === 0
+      || references.some((reference) => !criterionIds.has(reference))) return [];
+    const attempt = Number(frontmatterValue(content, "attempt"));
+    return [{ name, content, task: taskValue, amendment: frontmatterValue(content, "amendment"),
+      ...(Number.isInteger(attempt) ? { attempt } : {}), created: frontmatterValue(content, "created"),
+      proposedBy, approvedBy }];
+  });
+}
 function hasRequiredSections(content: string): boolean {
   const names = [
     "Objective",
@@ -53,14 +105,12 @@ function hasRequiredSections(content: string): boolean {
 
   return true;
 }
-
 function replaceFrontmatterValue(content: string, key: string, value: string): string {
   return content.replace(
     new RegExp(`(^${key}:[ \\t]*)[^\\r\\n]*(?=\\r?$)`, "m"),
     `$1${value}`,
   );
 }
-
 function actorArguments(): { actorRole: string; actorId: string } {
   const args = process.argv.slice(2);
   const roleIndex = args.indexOf("--actor-role");
@@ -71,7 +121,6 @@ function actorArguments(): { actorRole: string; actorId: string } {
   if (!actorRole || !actorId) fail("Both --actor-role and --actor-id are required");
   return { actorRole, actorId };
 }
-
 function readTaskSet(taskId: string) {
   const bcosDirectory = path.join(process.cwd(), ".bcos");
   const tasksDirectory = path.join(bcosDirectory, "tasks");
@@ -258,12 +307,8 @@ function approveTask(): void {
   } catch {
     fail(`Approved Review for Task ${taskId} attempt ${attempt} is missing`);
   }
-  const approvedHeading = new RegExp(
-    `^## Attempt ${attempt} — .+ — APPROVED[ \\t]*\\r?$`,
-    "m",
-  );
   const hasApproval = reviewNames.some((name) =>
-    approvedHeading.test(readFileSync(path.join(reviewsDirectory, name), "utf8"))
+    lastReviewVerdict(readFileSync(path.join(reviewsDirectory, name), "utf8"), attempt) === "APPROVED"
   );
   if (!hasApproval) fail(`Approved Review for Task ${taskId} attempt ${attempt} is missing`);
 
@@ -301,8 +346,7 @@ function requestChangesTask(): void {
   const currentAttempt = Number(frontmatterValue(target.content, "attempt"));
   if (!Number.isInteger(currentAttempt) || currentAttempt < 1) fail(`Task ${taskId} has an invalid attempt`);
   const reviewPath = path.join(bcosDirectory, "reviews", taskSet.matchingName);
-  const heading = new RegExp(`^## Attempt ${currentAttempt} — .+ — CHANGES_REQUESTED[ \\t]*\\r?$`, "m");
-  if (!existsReview(reviewPath, heading)) fail(`Changes-requested Review for Task ${taskId} attempt ${currentAttempt} is missing`);
+  if (!existsReview(reviewPath, currentAttempt, "CHANGES_REQUESTED")) fail(`Changes-requested Review for Task ${taskId} attempt ${currentAttempt} is missing`);
   const submitterId = submittedActor(bcosDirectory, taskId, currentAttempt);
   if (!submitterId) fail(`Submit event for Task ${taskId} attempt ${currentAttempt} is missing`);
   if (submitterId === actorId) fail("The submitting actor cannot request changes on the same attempt");
@@ -316,8 +360,8 @@ function requestChangesTask(): void {
   }, timestamp);
 }
 
-function existsReview(filePath: string, heading: RegExp): boolean {
-  try { return heading.test(readFileSync(filePath, "utf8")); } catch { return false; }
+function existsReview(filePath: string, attempt: number, expected: string): boolean {
+  try { return lastReviewVerdict(readFileSync(filePath, "utf8"), attempt) === expected; } catch { return false; }
 }
 
 function contextTask(): void {

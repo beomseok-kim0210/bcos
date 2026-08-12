@@ -1,0 +1,24 @@
+{
+  "execution_id": "20260811T063420927Z-5ec29fcf",
+  "task_id": "T-900",
+  "attempt": 1,
+  "started_at": "2026-08-11T06:34:20.927Z",
+  "updated_at": "2026-08-11T06:42:26.743Z",
+  "workflow_status": "success",
+  "stages": {
+    "start": "success",
+    "worker": "success",
+    "report_check": "success",
+    "verification": "success",
+    "submit": "success",
+    "review": "not_started",
+    "approve": "not_started",
+    "request_changes": "not_started"
+  },
+  "verification_command": "npm-test",
+  "current_stage": "submit",
+  "worker_name": "codex",
+  "worker_version": "0.146.0",
+  "completed_at": "2026-08-11T06:42:26.743Z",
+  "workflow_exit_reason": "success"
+}
