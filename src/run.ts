@@ -10,6 +10,7 @@ export type RunRecord = {
   execution_id: string; task_id: string; attempt: number; started_at: string; updated_at: string;
   completed_at?: string; workflow_status: "running" | "success" | "failed";
   workflow_exit_reason?: string; current_stage?: Stage; verification_command?: string;
+  worker_name?: string; worker_version?: string; reviewer_name?: string; reviewer_version?: string;
   stages: Record<Stage, StageStatus>;
 };
 

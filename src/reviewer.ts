@@ -1,28 +1,14 @@
-import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { buildContextPackage } from "./context.js";
+import { runModel } from "./model.js";
 
 export type ReviewResult = {
   code: number; duration: number; startedAt: string; completedAt: string;
   timedOut: boolean; errorCode?: string; verdict: "APPROVED" | "CHANGES_REQUESTED" | "unreadable";
   reviewPath: string; runtime: string;
+  version: string; stdoutBytes: number; stderrBytes: number; firstResponseMs?: number;
 };
-
-function reviewerCommand(root: string, override?: string): { command: string; args: string[]; runtime: string } {
-  if (override) {
-    const resolved = path.resolve(root, override);
-    if (!existsSync(resolved)) throw new Error(`Reviewer command does not exist: ${override}`);
-    return resolved.endsWith(".js")
-      ? { command: process.execPath, args: [resolved, "-p", "--output-format", "text"], runtime: "node" }
-      : { command: resolved, args: ["-p", "--output-format", "text"], runtime: "native" };
-  }
-  for (const directory of (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
-    const candidate = path.join(directory.replace(/^"|"$/g, ""), process.platform === "win32" ? "claude.exe" : "claude");
-    if (existsSync(candidate)) return { command: candidate, args: ["-p", "--output-format", "text"], runtime: "native" };
-  }
-  throw new Error("Cannot find the Claude executable on PATH");
-}
 
 function taskInfo(taskId: string, root: string) {
   const directory = path.join(root, ".bcos", "tasks");
@@ -78,26 +64,20 @@ export async function runReviewer(taskId: string, reviewer: string, commandOverr
   const relativeReviewPath = path.join(".bcos", "reviews", task.name);
   const reviewPath = path.join(root, relativeReviewPath);
   const reportPath = path.join(root, ".bcos", "reports", task.name);
-  const prepared = reviewerCommand(root, commandOverride);
   const report = existsSync(reportPath)
     ? `\n--- REPORT: ${path.join(".bcos", "reports", task.name)} ---\n${readFileSync(reportPath, "utf8")}`
     : "";
   const stdin = input(taskId, task.attempt, reviewer, relativeReviewPath, evidence,
     `${buildContextPackage(taskId, root).output}${report}`);
-  return new Promise((resolve) => {
-    const start = Date.now(); const startedAt = new Date().toISOString();
-    let settled = false; let timedOut = false;
-    const child = spawn(prepared.command, prepared.args, { cwd: root, shell: false, stdio: ["pipe", "pipe", "pipe"] });
-    child.stdout.pipe(process.stdout); child.stderr.pipe(process.stderr);
-    const timer = setTimeout(() => { timedOut = true; child.kill(); }, timeoutSeconds * 1_000);
-    const done = (code: number, errorCode?: string) => {
-      if (settled) return; settled = true; clearTimeout(timer);
-      resolve({ code, duration: Date.now() - start, startedAt, completedAt: new Date().toISOString(), timedOut,
-        errorCode, verdict: code === 0 && !timedOut ? verdict(reviewPath, task.attempt) : "unreadable",
-        reviewPath: relativeReviewPath, runtime: prepared.runtime });
-    };
-    child.on("error", (error: NodeJS.ErrnoException) => done(1, error.code));
-    child.on("close", (code) => done(code ?? 1));
-    child.stdin.on("error", () => undefined); child.stdin.end(stdin, "utf8");
-  });
+  const startedAt = new Date().toISOString();
+  const environment = { ...process.env };
+  delete environment.BCOS_WORKER_SESSION;
+  const result = await runModel({ runtime: "claude", cwd: root, stdin, timeoutSeconds,
+    commandOverride, env: environment });
+  return { code: result.exitCode, duration: result.durationMs, startedAt,
+    completedAt: new Date().toISOString(), timedOut: result.timedOut, errorCode: result.errorCode,
+    verdict: result.exitCode === 0 && !result.timedOut && !result.error ? verdict(reviewPath, task.attempt) : "unreadable",
+    reviewPath: relativeReviewPath, runtime: result.runtimeKind, version: result.version,
+    stdoutBytes: result.stdoutBytes, stderrBytes: result.stderrBytes,
+    ...(result.firstResponseMs === undefined ? {} : { firstResponseMs: result.firstResponseMs }) };
 }

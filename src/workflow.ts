@@ -213,9 +213,9 @@ export async function executeWorkflow(taskId: string | undefined, options: Workf
     markStage(run, "worker", "running");
     runners += 1;
     let timedOut = false;
-    let code: number;
+    let workerResult;
     try {
-      code = await runCodexWorker(taskId, {
+      workerResult = await runCodexWorker(taskId, {
         worker: options.worker, dryRun: false, timeoutSeconds: options.timeoutSeconds,
         workerCommand: options.workerCommand, onTimeout: () => { timedOut = true; },
       });
@@ -223,7 +223,10 @@ export async function executeWorkflow(taskId: string | undefined, options: Workf
       markStage(run, "worker", "failed");
       return finish("protocol", error instanceof Error ? error.message : String(error));
     }
-    if (code !== 0) { markStage(run, "worker", "failed"); return finish(timedOut ? "timeout" : "worker_nonzero"); }
+    run.worker_name = workerResult.runtime; run.worker_version = workerResult.version; updateRun(run);
+    if (workerResult.errorCode) { markStage(run, "worker", "failed");
+      return finish(workerResult.errorCode === "EPERM" ? "permission" : "environment"); }
+    if (workerResult.exitCode !== 0) { markStage(run, "worker", "failed"); return finish(timedOut ? "timeout" : "worker_nonzero"); }
     markStage(run, "worker", "success");
   }
   const currentAttempt = status === "TODO" ? attempt + 1 : attempt;
@@ -256,6 +259,7 @@ export async function executeWorkflow(taskId: string | undefined, options: Workf
       const message = error instanceof Error ? error.message : String(error);
       markStage(run, "review", "failed"); return escalate(/permission|EPERM/i.test(message) ? "permission" : "environment", message);
     }
+    run.reviewer_name = options.reviewer; run.reviewer_version = reviewResult.version; updateRun(run);
     if (reviewResult.timedOut) { markStage(run, "review", "failed"); return escalate("environment", "reviewer timed out"); }
     if (reviewResult.errorCode) { markStage(run, "review", "failed"); return escalate(reviewResult.errorCode === "EPERM" ? "permission" : "environment", "reviewer failed to start"); }
     if (reviewResult.code !== 0) { markStage(run, "review", "failed"); return escalate("reviewer_failed", `reviewer exited ${reviewResult.code}`); }
@@ -276,11 +280,14 @@ export async function executeWorkflow(taskId: string | undefined, options: Workf
     reworkAttempt = Number(value(changed.content, "attempt"));
     run.attempt = reworkAttempt; updateRun(run); markStage(run, "worker", "running");
     let timedOut = false;
-    const workerCode = await runCodexWorker(taskId, { worker: options.worker, dryRun: false,
+    const workerResult = await runCodexWorker(taskId, { worker: options.worker, dryRun: false,
       timeoutSeconds: options.timeoutSeconds, workerCommand: options.workerCommand,
       onTimeout: () => { timedOut = true; } });
+    run.worker_name = workerResult.runtime; run.worker_version = workerResult.version; updateRun(run);
     runners += 1;
-    if (workerCode !== 0) { markStage(run, "worker", "failed"); return finish(timedOut ? "timeout" : "worker_nonzero"); }
+    if (workerResult.errorCode) { markStage(run, "worker", "failed");
+      return finish(workerResult.errorCode === "EPERM" ? "permission" : "environment"); }
+    if (workerResult.exitCode !== 0) { markStage(run, "worker", "failed"); return finish(timedOut ? "timeout" : "worker_nonzero"); }
     markStage(run, "worker", "success"); markStage(run, "report_check", "running");
     if (!hasReport(taskId, changed.name, reworkAttempt)) { markStage(run, "report_check", "failed"); return finish("protocol", `Report for Task ${taskId} is missing attempt ${reworkAttempt}`); }
     markStage(run, "report_check", "success"); markStage(run, "verification", "running");

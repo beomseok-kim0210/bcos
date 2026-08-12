@@ -116,6 +116,7 @@ bcos/
 ```
 src/
 ├── cli.ts          # 명령 파싱 + 라우팅
+├── model.ts        # 모델 CLI 탐색·실행·관측 경계
 ├── core/
 │   ├── task.ts     # Task 파싱·검증·상태 전이
 │   ├── state.ts    # state.json 읽기·쓰기·재생성

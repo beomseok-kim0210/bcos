@@ -13,6 +13,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { modelCommand, runModel } from "../dist/model.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cli = path.join(root, "dist", "cli.js");
@@ -1985,6 +1986,34 @@ test("workflow telemetry includes the persisted execution id", () => withWorkflo
   assert.equal(values.current_stage, "submit"); assert.match(values.run_record_path, /\.bcos[\\/]runs/);
 }));
 
+test("workflow records the worker name and override version", () => withWorkflowFixture((fixture_) => {
+  assert.equal(runExecute(fixture_).status, 0);
+  const record = workflowRun(fixture_);
+  assert.equal(record.worker_name, "codex"); assert.equal(record.worker_version, "override");
+}));
+
+test("review workflow records the reviewer name and override version", () => withWorkflowFixture((fixture_) => {
+  assert.equal(runReviewExecute(fixture_).status, 0);
+  const record = workflowRun(fixture_);
+  assert.equal(record.reviewer_name, "claude"); assert.equal(record.reviewer_version, "override");
+}));
+
+test("non-review workflow omits reviewer identity fields", () => withWorkflowFixture((fixture_) => {
+  assert.equal(runExecute(fixture_).status, 0);
+  const record = workflowRun(fixture_);
+  assert.equal("reviewer_name" in record, false); assert.equal("reviewer_version" in record, false);
+}));
+
+test("status prints the worker name and version", () => withWorkflowFixture((fixture_) => {
+  assert.equal(runExecute(fixture_).status, 0);
+  assert.match(runStatus(fixture_).stdout, /^Worker: codex override$/m);
+}));
+
+test("status omits the reviewer line when review did not run", () => withWorkflowFixture((fixture_) => {
+  assert.equal(runExecute(fixture_).status, 0);
+  assert.doesNotMatch(runStatus(fixture_).stdout, /^Reviewer:/m);
+}));
+
 test("run records distinguish all stage state vocabulary without zeroes", () => withWorkflowFixture((fixture_) => {
   runExecute(fixture_, [], { WORKER_EXIT: "3" }); const text = JSON.stringify(workflowRun(fixture_));
   assert.match(text, /failed/); assert.match(text, /not_started/); assert.doesNotMatch(text, /:0(?:[,}])/);
@@ -2013,3 +2042,161 @@ test("a killed workflow leaves valid running observation", async () => {
     assert.doesNotMatch(JSON.stringify(record), /interrupted|unknown/);
   } finally { rmSync(fixture_.directory, { recursive: true, force: true }); }
 });
+
+function modelFixture(source = `process.stdin.resume(); process.stdin.on("end", () => {
+  console.log("model-stdout"); console.error("model-stderr");
+});`) {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "bcos-model-"));
+  const command = path.join(directory, "model.js");
+  writeFileSync(command, source, "utf8");
+  return { directory, command };
+}
+
+async function withModel(source, callback) {
+  const fixture_ = modelFixture(source);
+  try { await callback(fixture_); } finally { rmSync(fixture_.directory, { recursive: true, force: true }); }
+}
+
+test("model adapter prepares the unchanged Codex argv", () => withModel(undefined, ({ directory, command }) => {
+  assert.deepEqual(modelCommand({ runtime: "codex", cwd: directory, commandOverride: command }).args,
+    [command, "exec", "-", "--cd", directory]);
+}));
+
+test("model adapter identifies a JavaScript Codex override as node", () => withModel(undefined, ({ directory, command }) => {
+  const prepared = modelCommand({ runtime: "codex", cwd: directory, commandOverride: command });
+  assert.equal(prepared.command, process.execPath); assert.equal(prepared.runtimeKind, "node");
+}));
+
+test("model adapter prepares the unchanged Claude argv", () => withModel(undefined, ({ directory, command }) => {
+  assert.deepEqual(modelCommand({ runtime: "claude", cwd: directory, commandOverride: command }).args,
+    [command, "-p", "--output-format", "text"]);
+}));
+
+test("model adapter identifies a native Claude override as native", () => {
+  const prepared = modelCommand({ runtime: "claude", cwd: root, commandOverride: process.execPath });
+  assert.equal(prepared.command, process.execPath); assert.equal(prepared.runtimeKind, "native");
+});
+
+test("model adapter identifies a JavaScript Claude override as node", () => withModel(undefined, ({ directory, command }) => {
+  assert.equal(modelCommand({ runtime: "claude", cwd: directory, commandOverride: command }).runtimeKind, "node");
+}));
+
+test("model adapter delivers worker stdin unchanged", () => withModel(`let value=""; process.stdin.on("data", c => value += c);
+  process.stdin.on("end", () => process.stdout.write(value));`, async ({ directory, command }) => {
+  const result = await runModel({ runtime: "codex", cwd: directory, stdin: "exact-input", timeoutSeconds: 5,
+    commandOverride: command }); assert.equal(result.stdoutBytes, 11);
+}));
+
+test("model adapter delivers reviewer stdin unchanged", () => withModel(`let value=""; process.stdin.on("data", c => value += c);
+  process.stdin.on("end", () => process.stdout.write(value));`, async ({ directory, command }) => {
+  const result = await runModel({ runtime: "claude", cwd: directory, stdin: "review-input", timeoutSeconds: 5,
+    commandOverride: command }); assert.equal(result.stdoutBytes, 12);
+}));
+
+test("model adapter runs a worker at the requested cwd", () => withModel(`console.log(process.cwd())`, async ({ directory, command }) => {
+  const result = await runModel({ runtime: "codex", cwd: directory, stdin: "", timeoutSeconds: 5,
+    commandOverride: command }); assert.equal(result.exitCode, 0);
+}));
+
+test("model adapter runs a reviewer at the requested cwd", () => withModel(`console.log(process.cwd())`, async ({ directory, command }) => {
+  const result = await runModel({ runtime: "claude", cwd: directory, stdin: "", timeoutSeconds: 5,
+    commandOverride: command }); assert.equal(result.exitCode, 0);
+}));
+
+test("model adapter passes the worker session environment", () => withModel(`console.log(process.env.BCOS_WORKER_SESSION)`, async ({ directory, command }) => {
+  const result = await runModel({ runtime: "codex", cwd: directory, stdin: "", timeoutSeconds: 5,
+    commandOverride: command, env: { ...process.env, BCOS_WORKER_SESSION: "1" } }); assert.equal(result.exitCode, 0);
+}));
+
+test("model adapter can omit the worker session environment for review", () => withModel(`process.exitCode = process.env.BCOS_WORKER_SESSION ? 9 : 0`, async ({ directory, command }) => {
+  const env = { ...process.env }; delete env.BCOS_WORKER_SESSION;
+  const result = await runModel({ runtime: "claude", cwd: directory, stdin: "", timeoutSeconds: 5,
+    commandOverride: command, env }); assert.equal(result.exitCode, 0);
+}));
+
+test("model adapter observes reviewer stdout bytes", () => withModel(`process.stdout.write("abc")`, async ({ directory, command }) => {
+  const result = await runModel({ runtime: "claude", cwd: directory, stdin: "", timeoutSeconds: 5,
+    commandOverride: command }); assert.equal(result.stdoutBytes, 3);
+}));
+
+test("model adapter observes reviewer stderr bytes", () => withModel(`process.stderr.write("abcd")`, async ({ directory, command }) => {
+  const result = await runModel({ runtime: "claude", cwd: directory, stdin: "", timeoutSeconds: 5,
+    commandOverride: command }); assert.equal(result.stderrBytes, 4);
+}));
+
+test("model adapter observes reviewer first response", () => withModel(`process.stdout.write("x")`, async ({ directory, command }) => {
+  const result = await runModel({ runtime: "claude", cwd: directory, stdin: "", timeoutSeconds: 5,
+    commandOverride: command }); assert.ok(Number.isInteger(result.firstResponseMs));
+}));
+
+test("model adapter omits first response when there is no output", () => withModel(`process.exitCode = 0`, async ({ directory, command }) => {
+  const result = await runModel({ runtime: "claude", cwd: directory, stdin: "", timeoutSeconds: 5,
+    commandOverride: command }); assert.equal("firstResponseMs" in result, false);
+}));
+
+test("model adapter reports worker exit zero", () => withModel(`process.exitCode = 0`, async ({ directory, command }) => {
+  const result = await runModel({ runtime: "codex", cwd: directory, stdin: "", timeoutSeconds: 5,
+    commandOverride: command }); assert.equal(result.exitCode, 0);
+}));
+
+test("model adapter reports worker nonzero exit", () => withModel(`process.exitCode = 7`, async ({ directory, command }) => {
+  const result = await runModel({ runtime: "codex", cwd: directory, stdin: "", timeoutSeconds: 5,
+    commandOverride: command }); assert.equal(result.exitCode, 7); assert.equal(result.error, undefined);
+}));
+
+test("model adapter reports reviewer nonzero exit", () => withModel(`process.exitCode = 8`, async ({ directory, command }) => {
+  const result = await runModel({ runtime: "claude", cwd: directory, stdin: "", timeoutSeconds: 5,
+    commandOverride: command }); assert.equal(result.exitCode, 8); assert.equal(result.error, undefined);
+}));
+
+test("model adapter kills and marks worker timeout", () => withModel(`setTimeout(() => {}, 5000)`, async ({ directory, command }) => {
+  let called = false; const result = await runModel({ runtime: "codex", cwd: directory, stdin: "",
+    timeoutSeconds: 1, commandOverride: command, onTimeout: () => { called = true; } });
+  assert.equal(result.timedOut, true); assert.equal(called, true);
+}));
+
+test("model adapter kills and marks reviewer timeout", () => withModel(`setTimeout(() => {}, 5000)`, async ({ directory, command }) => {
+  const result = await runModel({ runtime: "claude", cwd: directory, stdin: "", timeoutSeconds: 1,
+    commandOverride: command }); assert.equal(result.timedOut, true);
+}));
+
+test("model adapter reports a missing executable as not_found", async () => {
+  const result = await runModel({ runtime: "codex", cwd: root, stdin: "", timeoutSeconds: 1,
+    commandOverride: path.join(root, "missing-model.js") }); assert.equal(result.error, "not_found");
+});
+
+test("model adapter distinguishes spawn failure from nonzero exit", async () => {
+  const result = await runModel({ runtime: "claude", cwd: root, stdin: "", timeoutSeconds: 1,
+    commandOverride: root }); assert.equal(result.error, "spawn_failed");
+});
+
+test("model adapter does not use a shell for metacharacters", () => withModel(`process.exitCode = process.argv.some(v => v.includes("injected")) ? 9 : 0`, async ({ directory, command }) => {
+  const result = await runModel({ runtime: "codex", cwd: directory, stdin: "; injected", timeoutSeconds: 5,
+    commandOverride: command }); assert.equal(result.exitCode, 0);
+}));
+
+test("model adapter results contain no command absolute path", () => withModel(`process.exitCode = 0`, async ({ directory, command }) => {
+  const result = await runModel({ runtime: "codex", cwd: directory, stdin: "", timeoutSeconds: 5,
+    commandOverride: command }); assert.doesNotMatch(JSON.stringify(result), new RegExp(directory.replaceAll("\\", "\\\\")));
+}));
+
+test("model adapter returns the selected runtime", () => withModel(`process.exitCode = 0`, async ({ directory, command }) => {
+  const result = await runModel({ runtime: "claude", cwd: directory, stdin: "", timeoutSeconds: 5,
+    commandOverride: command }); assert.equal(result.runtime, "claude");
+}));
+
+test("model adapter reports override version without probing", () => withModel(`process.exitCode = process.argv.includes("--version") ? 9 : 0`, async ({ directory, command }) => {
+  const result = await runModel({ runtime: "claude", cwd: directory, stdin: "", timeoutSeconds: 5,
+    commandOverride: command }); assert.equal(result.version, "override"); assert.equal(result.exitCode, 0);
+}));
+
+test("model adapter uses one common result shape for both runtimes", () => withModel(`process.exitCode = 0`, async ({ directory, command }) => {
+  const codex = await runModel({ runtime: "codex", cwd: directory, stdin: "", timeoutSeconds: 5, commandOverride: command });
+  const claude = await runModel({ runtime: "claude", cwd: directory, stdin: "", timeoutSeconds: 5, commandOverride: command });
+  assert.deepEqual(Object.keys(codex), Object.keys(claude));
+}));
+
+test("model adapter result durations are nonnegative integers", () => withModel(`process.exitCode = 0`, async ({ directory, command }) => {
+  const result = await runModel({ runtime: "codex", cwd: directory, stdin: "", timeoutSeconds: 5,
+    commandOverride: command }); assert.ok(Number.isInteger(result.durationMs)); assert.ok(result.durationMs >= 0);
+}));

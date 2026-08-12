@@ -360,8 +360,8 @@ function runTask(): void {
   }
 
   runCodexWorker(taskId, options)
-    .then((exitCode) => {
-      process.exitCode = exitCode;
+    .then((result) => {
+      process.exitCode = result.timedOut ? 1 : result.exitCode;
     })
     .catch((error) => {
       console.error(error instanceof Error ? error.message : String(error));
@@ -437,6 +437,8 @@ function statusTask(): void {
   console.log(`Updated: ${record.updated_at}`);
   console.log(`Completed: ${record.completed_at ?? "not observed"}`);
   console.log(`Exit reason: ${record.workflow_exit_reason ?? "not observed"}`);
+  if (record.worker_name) console.log(`Worker: ${record.worker_name} ${record.worker_version}`);
+  if (record.reviewer_name) console.log(`Reviewer: ${record.reviewer_name} ${record.reviewer_version}`);
   console.log(`Last lifecycle event: ${lastEvent ? `${lastEvent.event} at ${lastEvent.ts}` : "none"}`);
   for (const stage of stageNames) console.log(`Stage ${stage}: ${record.stages[stage]}`);
   if (record.workflow_status === "running" && Date.now() - Date.parse(record.updated_at) > 60_000) {

@@ -1,8 +1,8 @@
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { buildContextPackage } from "./context.js";
+import { modelCommand, runModel, type ModelResult } from "./model.js";
 
 const DEFAULT_TIMEOUT_SECONDS = 1_800;
 
@@ -27,6 +27,7 @@ type PreparedRun = {
   contextChars: number;
   contextSha256: string;
   stdin: string;
+  version: string;
 };
 
 function sha256(value: string): string {
@@ -38,27 +39,6 @@ function frontmatterValue(content: string, key: string): string | undefined {
   return frontmatter
     ? new RegExp(`^${key}:[ \\t]*([^\\r\\n]*)$`, "m").exec(frontmatter)?.[1].trim()
     : undefined;
-}
-
-function findWorkerCommand(rootDirectory: string, override?: string): string {
-  if (override) {
-    const resolved = path.resolve(rootDirectory, override);
-    if (!existsSync(resolved)) throw new Error(`Worker command does not exist: ${override}`);
-    return resolved;
-  }
-
-  for (const directory of (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
-    const candidate = path.join(
-      directory.replace(/^"|"$/g, ""),
-      "node_modules",
-      "@openai",
-      "codex",
-      "bin",
-      "codex.js",
-    );
-    if (existsSync(candidate)) return candidate;
-  }
-  throw new Error("Cannot find the Codex JavaScript entry point on PATH");
 }
 
 function buildPreamble(taskId: string, worker: string, reportPath: string): string {
@@ -129,10 +109,12 @@ function prepareRun(taskId: string, options: RunWorkerOptions): PreparedRun {
     ? `\n\n--- REVIEW OF PREVIOUS ATTEMPT ---\n${readFileSync(reviewPath, "utf8")}`
     : "";
   const stdin = `${buildPreamble(taskId, options.worker, reportPath)}\n\n--- CONTEXT PACKAGE ---\n${contextPackage.output}${previousReview}`;
-  const workerCommand = findWorkerCommand(rootDirectory, options.workerCommand);
+  const command = modelCommand({ runtime: "codex", cwd: rootDirectory, commandOverride: options.workerCommand });
+  if (!command.command) throw new Error(options.workerCommand
+    ? `Worker command does not exist: ${options.workerCommand}`
+    : "Cannot find the Codex JavaScript entry point on PATH");
   return {
-    command: process.execPath,
-    args: [workerCommand, "exec", "-", "--cd", rootDirectory],
+    command: command.command, args: command.args,
     cwd: rootDirectory,
     taskId,
     worker: options.worker,
@@ -143,6 +125,7 @@ function prepareRun(taskId: string, options: RunWorkerOptions): PreparedRun {
     contextChars: headerNumber(contextPackage.output, "characters"),
     contextSha256: sha256(contextPackage.output),
     stdin,
+    version: command.version,
   };
 }
 
@@ -178,76 +161,24 @@ function printDryRun(prepared: PreparedRun): void {
   telemetry(prepared, { worker_timed_out: false });
 }
 
-export async function runCodexWorker(taskId: string, options: RunWorkerOptions): Promise<number> {
+export async function runCodexWorker(taskId: string, options: RunWorkerOptions): Promise<ModelResult> {
   const prepared = prepareRun(taskId, options);
   if (options.dryRun) {
     printDryRun(prepared);
-    return 0;
+    return { exitCode: 0, durationMs: 0, stdoutBytes: 0, stderrBytes: 0, timedOut: false,
+      runtime: "codex", runtimeKind: "node", version: prepared.version };
   }
-
-  return new Promise((resolve) => {
-    const started = Date.now();
-    let firstResponse: number | undefined;
-    let stdoutBytes = 0;
-    let stderrBytes = 0;
-    let timedOut = false;
-    let settled = false;
-    const child = spawn(prepared.command, prepared.args, {
-      cwd: prepared.cwd,
-      shell: false,
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, BCOS_WORKER_SESSION: "1" },
-    });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      options.onTimeout?.();
-      child.kill();
-    }, prepared.timeoutSeconds * 1_000);
-
-    const noteResponse = () => { firstResponse ??= Date.now() - started; };
-    child.stdout.on("data", (chunk: Buffer) => {
-      noteResponse();
-      stdoutBytes += chunk.length;
-      process.stdout.write(chunk);
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      noteResponse();
-      stderrBytes += chunk.length;
-      process.stderr.write(chunk);
-    });
-    child.on("error", (error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      console.error(`Worker failed to start: ${error.message}`);
-      telemetry(prepared, {
-        worker_duration_ms: Date.now() - started,
-        worker_exit_code: 1,
-        worker_timed_out: false,
-        worker_stdout_bytes: stdoutBytes,
-        worker_stderr_bytes: stderrBytes,
-      });
-      resolve(1);
-    });
-    child.on("close", (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      const duration = Date.now() - started;
-      if (timedOut) console.error(`Worker timed out after ${prepared.timeoutSeconds} seconds`);
-      else if (code && code !== 0) console.error(`Worker failed with exit code ${code}`);
-      const execution = {
-        ...(firstResponse === undefined ? {} : { first_worker_response_ms: firstResponse }),
-        worker_duration_ms: duration,
-        worker_exit_code: code ?? "N/A",
-        worker_timed_out: timedOut,
-        worker_stdout_bytes: stdoutBytes,
-        worker_stderr_bytes: stderrBytes,
-      };
-      telemetry(prepared, execution);
-      resolve(timedOut ? 1 : code ?? 1);
-    });
-    child.stdin.on("error", () => undefined);
-    child.stdin.end(prepared.stdin, "utf8");
+  const result = await runModel({ runtime: "codex", cwd: prepared.cwd, stdin: prepared.stdin,
+    timeoutSeconds: prepared.timeoutSeconds, commandOverride: options.workerCommand,
+    env: { ...process.env, BCOS_WORKER_SESSION: "1" }, onTimeout: options.onTimeout });
+  if (result.error) console.error(`Worker failed to start${result.errorCode ? `: ${result.errorCode}` : ""}`);
+  else if (result.timedOut) console.error(`Worker timed out after ${prepared.timeoutSeconds} seconds`);
+  else if (result.exitCode !== 0) console.error(`Worker failed with exit code ${result.exitCode}`);
+  telemetry(prepared, {
+    ...(result.firstResponseMs === undefined ? {} : { first_worker_response_ms: result.firstResponseMs }),
+    worker_runtime: result.runtimeKind, worker_duration_ms: result.durationMs,
+    worker_exit_code: result.exitCode, worker_timed_out: result.timedOut,
+    worker_stdout_bytes: result.stdoutBytes, worker_stderr_bytes: result.stderrBytes,
   });
+  return result;
 }

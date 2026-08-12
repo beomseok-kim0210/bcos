@@ -29,9 +29,8 @@ BCOS의 최종 비교 실험은 같은 Task를 세 방식으로 수행하고 값
 |---|---|
 | `now` | BCOS가 이미 값을 만든다 |
 | `T-009` | 이 Task에서 출력하기 시작한다 |
-| `T-010` | Model Adapter가 있어야 알 수 있다 |
+| `blocked` | 현재 argv로 관측할 수 없거나 프로토콜 변경이 필요하다. 사유를 명시한다 |
 | `manual` | 도구가 관측할 수 없다. 사람이 적는다 |
-| `blocked` | 프로토콜 변경이 필요하다. 사유를 명시한다 |
 
 ---
 
@@ -82,17 +81,17 @@ BCOS의 최종 비교 실험은 같은 Task를 세 방식으로 수행하고 값
 
 ## 4. Token Metrics
 
-**지금은 전부 `N/A`다.** BCOS는 worker의 출력을 해석하지 않으므로 사용량을 모른다.
-필드는 T-010이 채운다.
+**지금은 전부 `N/A`다.** T-013 Model Adapter가 실행 경계를 만들었지만 현재 argv는
+machine-readable 사용량 출력을 요청하지 않는다. 출력 형식 변경은 이 Task 범위 밖이다.
 
 | key | 단위 | 가용성 |
 |---|---|---|
-| `input_tokens` | 정수 | T-010 |
-| `output_tokens` | 정수 | T-010 |
-| `total_tokens` | 정수 | T-010 |
-| `context_tokens` | 정수 | T-010 |
+| `input_tokens` | 정수 | blocked |
+| `output_tokens` | 정수 | blocked |
+| `total_tokens` | 정수 | blocked |
+| `context_tokens` | 정수 | blocked |
 
-**확장 지점** — T-010 Model Adapter는 worker마다 사용량 보고 방식이 다르다는 것을
+**확장 지점** — T-013 Model Adapter는 worker마다 사용량 보고 방식이 다르다는 것을
 전제로 설계한다. 그래서 위 네 필드에 더해 다음을 남긴다.
 
 | key | 단위 | 뜻 |
@@ -212,18 +211,19 @@ Raw Data로 취급한다. 나눗셈이 들어가면 그때부터 금지 대상�
 
 ## 10. Cost Metrics
 
-**전부 `N/A`다.** 필드만 정의한다.
+**전부 `N/A`다.** 현재 argv가 machine-readable 사용량·비용 출력을 요청하지 않으므로
+관측할 수 없다. 출력 형식 변경 전까지 `blocked`이며 필드만 정의한다.
 
 | key | 단위 | 가용성 |
 |---|---|---|
-| `input_cost` | USD | T-010 |
-| `output_cost` | USD | T-010 |
-| `total_cost` | USD | T-010 |
-| `estimated_cost` | USD | T-010 |
-| `cost_source` | 문자열 | T-010 — 단가표 출처와 조회 시점 |
+| `input_cost` | USD | blocked |
+| `output_cost` | USD | blocked |
+| `total_cost` | USD | blocked |
+| `estimated_cost` | USD | blocked |
+| `cost_source` | 문자열 | blocked — 단가표 출처와 조회 시점 |
 
 **단가는 바뀐다.** `cost_source` 없이 기록된 비용은 나중에 재현할 수 없다.
-T-010은 단가를 코드에 박지 말고 값과 함께 출처를 남긴다.
+후속 구현은 단가를 코드에 박지 말고 값과 함께 출처를 남긴다.
 
 ## 11. Workflow Metrics
 
@@ -262,6 +262,12 @@ T-010은 단가를 코드에 박지 말고 값과 함께 출처를 남긴다.
 | `current_stage` | stage 이름 | 마지막으로 진행한 stage | T-012 |
 | `stage_status` | `not_started` \| `skipped` \| `running` \| `success` \| `failed` | stage 경계 관측값 | T-012 |
 | `run_record_path` | 저장소 상대 경로 | `.bcos/runs/<execution-id>.json` | T-012 |
+
+run artifact에는 실행기를 식별하는 `worker_name` · `worker_version`과 review를 실행한
+경우의 `reviewer_name` · `reviewer_version`도 남긴다. `worker_name`과
+`reviewer_name`은 stdout telemetry의 동명 키와 같은 뜻이며 각각 CLI의
+`--worker`와 `--reviewer` 값이다. 실행 형태는 기존 stdout telemetry의
+`worker_runtime` · `reviewer_runtime`이 계속 나타낸다.
 
 ## 공개 지표와의 관계
 

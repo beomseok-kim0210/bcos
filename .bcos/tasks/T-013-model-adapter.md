@@ -2,10 +2,10 @@
 protocol: "0.1"
 id: T-013
 title: Move process execution behind one boundary so worker and reviewer runtimes are selectable
-status: TODO
-attempt: 0
+status: DONE
+attempt: 2
 created: 2026-08-11T04:12:00Z
-updated: 2026-08-11T04:12:00Z
+updated: 2026-08-12T00:27:01.738Z
 ---
 
 # T-013 — Model Adapter
