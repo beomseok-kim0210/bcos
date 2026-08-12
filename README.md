@@ -167,6 +167,18 @@ Implemented and verified:
 - **The run record never owns lifecycle state.** A task can be `IMPLEMENTED` while its
   last execution says `failed`; both are true about different things. Task state stays in
   `tasks/*.md`, and the recorder writes to neither `events.jsonl` nor `state.json`
+- **A failed verification is handed to the next worker.** The run record keeps the
+  verification exit code and the last 2,048 bytes of its output, and a worker resuming
+  that task receives the logical command name, the exit code, and that excerpt at the end
+  of its input. Nobody has to explain the failure again. The output still streams to the
+  terminal as before; the excerpt is a bounded tail, not a stored log
+- **A fixed failure stops being reported.** The handoff reads the most recent execution
+  that actually reached verification, so once a later run passes, the older failure is no
+  longer sent. Nothing is deleted — the failed record stays in `.bcos/runs/`
+- Repository-root and home paths in that excerpt are replaced with `<root>` and `<home>`.
+  **That is two path substitutions, not secret redaction** — anything else in the
+  verifier's output is carried as-is. When there is no failure to report, worker input is
+  byte-for-byte what it was before this existed
 - Lifecycle guards checked **before any write**, so a rejected transition leaves every
   file untouched — verified across eleven failure paths. `task context` writes nothing
   at all, and a rejected package emits zero bytes to stdout
@@ -410,12 +422,11 @@ tests/                Tests
 
 Core CLI commands → automated lifecycle transitions → context package generation →
 worker execution → prompt elimination → workflow orchestration → reviewer and rework
-orchestration → execution observability — **done.** What follows:
+orchestration → execution observability → model adapter boundary → verification failure
+feedback — **done.** What follows:
 
 | | |
 |---|---|
-| **Verification Failure Feedback** | Carry the failing evidence into the next worker resume, so a failed verification can actually be acted on |
-| **Model Adapter** | Token and cost collection, so the fields that read `N/A` today hold measurements |
 | **Multi-model Worker Switching** | A second worker, which is what makes "switch models" mean anything |
 | **Benchmark Harness** | Answer the six fairness questions before comparing arms |
 | **Benchmark Report** | Where division is finally allowed |
