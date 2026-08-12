@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 export const stageNames = ["start", "worker", "report_check", "verification", "submit",
@@ -10,9 +11,21 @@ export type RunRecord = {
   execution_id: string; task_id: string; attempt: number; started_at: string; updated_at: string;
   completed_at?: string; workflow_status: "running" | "success" | "failed";
   workflow_exit_reason?: string; current_stage?: Stage; verification_command?: string;
+  verification_exit_code?: number; verification_excerpt?: string;
   worker_name?: string; worker_version?: string; reviewer_name?: string; reviewer_version?: string;
   stages: Record<Stage, StageStatus>;
 };
+
+export function verificationExcerpt(tail: Buffer, truncated: boolean, root = process.cwd()): string {
+  let excerpt = tail.toString("utf8");
+  for (const [value, replacement] of [[root, "<root>"], [os.homedir(), "<home>"]] as const) {
+    if (value) {
+      excerpt = excerpt.replaceAll(value, replacement)
+        .replaceAll(value.replaceAll("\\", "/"), replacement);
+    }
+  }
+  return `${truncated ? "…\n" : ""}${excerpt}`;
+}
 
 function runsDirectory(root = process.cwd()): string {
   return path.join(root, ".bcos", "runs");

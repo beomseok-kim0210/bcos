@@ -1182,6 +1182,21 @@ function withRunnerFixture(callback, options) {
   }
 }
 
+function writeVerificationRun(fixture_, status, {
+  command = "custom-verifier", code = status === "failed" ? 1 : 0, excerpt = "verification output\n",
+} = {}) {
+  const directory = path.join(fixture_.directory, ".bcos", "runs");
+  mkdirSync(directory, { recursive: true });
+  const index = readdirSync(directory).length;
+  const executionId = `20260812T00000${index}000Z-a1b2c3d${index}`;
+  const stages = Object.fromEntries(["start", "worker", "report_check", "verification", "submit",
+    "review", "approve", "request_changes"].map(name => [name, name === "verification" ? status : "not_started"]));
+  writeFileSync(path.join(directory, `${executionId}.json`), `${JSON.stringify({ execution_id: executionId,
+    task_id: fixture_.id, attempt: 1, started_at: "2026-08-12T00:00:00.000Z",
+    updated_at: "2026-08-12T00:00:00.000Z", workflow_status: status === "failed" ? "failed" : "success",
+    verification_command: command, verification_exit_code: code, verification_excerpt: excerpt, stages })}\n`, "utf8");
+}
+
 function dryRun(fixture_) {
   return runWorker(fixture_.directory, fixture_.workerPath, fixture_.id, "--dry-run");
 }
@@ -1386,6 +1401,72 @@ const telemetryKeys = [
   "retry_count", "runner_transitions_caused",
 ];
 
+test("task run includes the previous host verification failure block", () => withRunnerFixture((fixture_) => {
+  writeVerificationRun(fixture_, "failed");
+  assert.equal(runWorker(fixture_.directory, fixture_.workerPath, fixture_.id).status, 0);
+  assert.match(readFileSync(path.join(fixture_.directory, "received.txt"), "utf8"),
+    /--- PREVIOUS HOST VERIFICATION FAILURE ---/);
+}));
+
+test("verification failure block includes the logical command name", () => withRunnerFixture((fixture_) => {
+  writeVerificationRun(fixture_, "failed", { command: "npm-test" });
+  runWorker(fixture_.directory, fixture_.workerPath, fixture_.id);
+  assert.match(readFileSync(path.join(fixture_.directory, "received.txt"), "utf8"), /command: npm-test/);
+}));
+
+test("verification failure block includes the exit code", () => withRunnerFixture((fixture_) => {
+  writeVerificationRun(fixture_, "failed", { code: 7 });
+  runWorker(fixture_.directory, fixture_.workerPath, fixture_.id);
+  assert.match(readFileSync(path.join(fixture_.directory, "received.txt"), "utf8"), /exit code: 7/);
+}));
+
+test("verification failure block includes the bounded excerpt", () => withRunnerFixture((fixture_) => {
+  writeVerificationRun(fixture_, "failed", { excerpt: "bounded failure excerpt\n" });
+  runWorker(fixture_.directory, fixture_.workerPath, fixture_.id);
+  assert.match(readFileSync(path.join(fixture_.directory, "received.txt"), "utf8"), /bounded failure excerpt/);
+}));
+
+test("the last successful verification suppresses an older failure", () => withRunnerFixture((fixture_) => {
+  writeVerificationRun(fixture_, "failed"); writeVerificationRun(fixture_, "success");
+  runWorker(fixture_.directory, fixture_.workerPath, fixture_.id);
+  assert.doesNotMatch(readFileSync(path.join(fixture_.directory, "received.txt"), "utf8"),
+    /PREVIOUS HOST VERIFICATION FAILURE/);
+}));
+
+test("not-started and skipped runs do not hide the last verification result", () => withRunnerFixture((fixture_) => {
+  writeVerificationRun(fixture_, "failed", { excerpt: "kept failure\n" });
+  writeVerificationRun(fixture_, "not_started"); writeVerificationRun(fixture_, "skipped");
+  runWorker(fixture_.directory, fixture_.workerPath, fixture_.id);
+  assert.match(readFileSync(path.join(fixture_.directory, "received.txt"), "utf8"), /kept failure/);
+}));
+
+test("review feedback precedes host verification failure feedback", () => withRunnerFixture((fixture_) => {
+  const taskPath = path.join(fixture_.directory, ".bcos", "tasks", `${fixture_.id}-runner.md`);
+  const content = readFileSync(taskPath, "utf8").replace(/^attempt: 1$/m, "attempt: 2");
+  writeFileSync(taskPath, content, "utf8");
+  const reviews = path.join(fixture_.directory, ".bcos", "reviews"); mkdirSync(reviews);
+  writeFileSync(path.join(reviews, `${fixture_.id}-runner.md`), "previous review\n", "utf8");
+  writeVerificationRun(fixture_, "failed"); runWorker(fixture_.directory, fixture_.workerPath, fixture_.id);
+  const input = readFileSync(path.join(fixture_.directory, "received.txt"), "utf8");
+  assert.ok(input.indexOf("--- REVIEW OF PREVIOUS ATTEMPT ---") <
+    input.indexOf("--- PREVIOUS HOST VERIFICATION FAILURE ---"));
+}));
+
+test("identical verification feedback produces identical worker stdin hashes", () => withRunnerFixture((fixture_) => {
+  writeVerificationRun(fixture_, "failed", { excerpt: "same excerpt\n" });
+  const first = summaryValue(dryRun(fixture_).stdout, "stdin SHA-256");
+  const second = summaryValue(dryRun(fixture_).stdout, "stdin SHA-256");
+  assert.equal(first, second);
+}));
+
+test("real-shape verification failure is handed to the worker intact", () => withRunnerFixture((fixture_) => {
+  const output = "✖ a killed workflow leaves valid running observation\n  'start' !== 'worker'\nℹ tests 186\nℹ pass 185\nℹ fail 1\n";
+  writeVerificationRun(fixture_, "failed", { excerpt: output });
+  runWorker(fixture_.directory, fixture_.workerPath, fixture_.id);
+  assert.match(readFileSync(path.join(fixture_.directory, "received.txt"), "utf8"),
+    /✖ a killed workflow leaves valid running observation[\s\S]*'start' !== 'worker'[\s\S]*ℹ fail 1/);
+}));
+
 test("task run dry-run emits telemetry without process-only fields", () => {
   withRunnerFixture((fixture_) => {
     const result = dryRun(fixture_);
@@ -1589,12 +1670,13 @@ process.stdin.on("end", () => {
   setTimeout(() => { process.exitCode = Number(process.env.WORKER_EXIT || 0); }, Number(process.env.WORKER_DELAY || 0));
 });
 `, "utf8");
-  const verifierPath = path.join(directory, "fake-verifier.js");
+const verifierPath = path.join(directory, "fake-verifier.js");
   writeFileSync(verifierPath, `
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 console.log("fixture-verifier-stdout");
 console.error("fixture-verifier-stderr");
+if (process.env.VERIFY_OUTPUT) process.stdout.write(process.env.VERIFY_OUTPUT);
 writeFileSync(path.join(process.cwd(), "verification-ran.txt"), process.cwd(), "utf8");
 const countPath = path.join(process.cwd(), "verification-count.txt");
 const count = existsSync(countPath) ? Number(readFileSync(countPath, "utf8")) + 1 : 1;
@@ -1763,6 +1845,63 @@ test("task execute verification failure preserves Report and skips submit", () =
   assert.equal(existsSync(path.join(fixture_.directory, ".bcos", "reports", fixture_.taskName)), true);
   assert.deepEqual(workflowEvents(fixture_).map((event) => event.event), ["TASK_STARTED"]);
 }));
+
+test("verification failure still does not submit or increment attempt", () => withWorkflowFixture((fixture_) => {
+  runExecute(fixture_, [], { VERIFY_EXIT: "4" });
+  const task = readFileSync(path.join(fixture_.directory, ".bcos", "tasks", fixture_.taskName), "utf8");
+  assert.match(task, /^status: IN_PROGRESS$/m); assert.match(task, /^attempt: 1$/m);
+  assert.deepEqual(workflowEvents(fixture_).map(event => event.event), ["TASK_STARTED"]);
+}));
+
+test("executed verification persists exit code and excerpt", () => withWorkflowFixture((fixture_) => {
+  runExecute(fixture_, [], { VERIFY_EXIT: "4", VERIFY_OUTPUT: "specific failure\n" });
+  const record = workflowRun(fixture_);
+  assert.equal(record.verification_exit_code, 4); assert.match(record.verification_excerpt, /specific failure/);
+}));
+
+test("a run without verification omits verification evidence fields", () => withWorkflowFixture((fixture_) => {
+  runExecute(fixture_, [], { WORKER_EXIT: "3" }); const record = workflowRun(fixture_);
+  assert.equal("verification_exit_code" in record, false);
+  assert.equal("verification_excerpt" in record, false);
+}));
+
+test("verification excerpt and handoff contain no repository or home absolute path", () => withWorkflowFixture((fixture_) => {
+  const exposed = `${fixture_.directory}\n${os.homedir()}\n`;
+  runExecute(fixture_, [], { VERIFY_EXIT: "4", VERIFY_OUTPUT: exposed });
+  const record = workflowRun(fixture_); const serialized = JSON.stringify(record);
+  assert.doesNotMatch(serialized, new RegExp(fixture_.directory.replaceAll("\\", "\\\\")));
+  assert.doesNotMatch(serialized, new RegExp(os.homedir().replaceAll("\\", "\\\\")));
+  assert.match(record.verification_excerpt, /<root>/); assert.match(record.verification_excerpt, /<home>/);
+  runExecute(fixture_, [], { VERIFY_EXIT: "4" });
+  const input = readFileSync(path.join(fixture_.directory, "worker-input-2.txt"), "utf8");
+  assert.doesNotMatch(input, new RegExp(fixture_.directory.replaceAll("\\", "\\\\")));
+  assert.doesNotMatch(input, new RegExp(os.homedir().replaceAll("\\", "\\\\")));
+  assert.match(input, /<root>/); assert.match(input, /<home>/);
+}));
+
+test("home environment value is removed from persisted verification output", () => withWorkflowFixture((fixture_) => {
+  runExecute(fixture_, [], { VERIFY_EXIT: "4", VERIFY_OUTPUT: os.homedir() });
+  assert.doesNotMatch(workflowRun(fixture_).verification_excerpt,
+    new RegExp(os.homedir().replaceAll("\\", "\\\\")));
+}));
+
+test("verification output over 2048 bytes is tailed and marked", () => withWorkflowFixture((fixture_) => {
+  runExecute(fixture_, [], { VERIFY_EXIT: "4", VERIFY_OUTPUT: `discard-me-${"x".repeat(2_100)}tail-marker` });
+  const excerpt = workflowRun(fixture_).verification_excerpt;
+  assert.ok(Buffer.byteLength(excerpt, "utf8") <= 2_052); assert.match(excerpt, /^…\n/);
+  assert.doesNotMatch(excerpt, /discard-me/); assert.match(excerpt, /tail-marker/);
+}));
+
+test("successful verification also persists zero and an unmarked excerpt", () => withWorkflowFixture((fixture_) => {
+  runExecute(fixture_); const record = workflowRun(fixture_);
+  assert.equal(record.verification_exit_code, 0); assert.doesNotMatch(record.verification_excerpt, /^…/);
+}));
+
+test("verify-only keeps zero runner invocations while persisting verification evidence", () => withWorkflowFixture((fixture_) => {
+  const result = runExecute(fixture_, ["--verify-only"]); const record = workflowRun(fixture_);
+  assert.equal(telemetryValues(result.stdout).runner_invocations, "0");
+  assert.equal(record.verification_exit_code, 0); assert.ok("verification_excerpt" in record);
+}, { status: "IN_PROGRESS", attempt: 1, report: true }));
 
 test("task execute forwards verifier stdout and stderr", () => withWorkflowFixture((fixture_) => {
   const result = runExecute(fixture_);
@@ -2152,9 +2291,10 @@ test("invalid execute options create no execution records", () => withWorkflowFi
   assert.deepEqual(bcosSnapshot(fixture_.directory), before);
 }));
 
-test("run records contain no Task status or private output fields", () => withWorkflowFixture((fixture_) => {
+test("run records contain bounded verification output but no private worker or context output", () => withWorkflowFixture((fixture_) => {
   runExecute(fixture_); const text = JSON.stringify(workflowRun(fixture_));
-  assert.doesNotMatch(text, /"status":|FIXTURE WORKER PROMPT|fixture-verifier-stdout|BCOS_WORKER_SESSION|context package/i);
+  assert.doesNotMatch(text, /"status":|FIXTURE WORKER PROMPT|BCOS_WORKER_SESSION|context package/i);
+  assert.match(workflowRun(fixture_).verification_excerpt, /fixture-verifier-stdout/);
   assert.equal(workflowRun(fixture_).verification_command, "custom-verifier");
 }));
 

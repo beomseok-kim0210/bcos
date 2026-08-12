@@ -3,7 +3,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { runCodexWorker } from "./runner.js";
 import { runReviewer, type ReviewResult } from "./reviewer.js";
-import { createRun, finishRun, markStage, updateRun, type RunRecord, type Stage } from "./run.js";
+import { createRun, finishRun, markStage, updateRun, verificationExcerpt, type RunRecord, type Stage } from "./run.js";
 
 type ExitReason = "success" | "nested_worker" | "permission" | "environment" |
   "protocol" | "worker_nonzero" | "timeout" | "verification" | "unknown" |
@@ -63,21 +63,31 @@ function npmCommand(): string | undefined {
   return undefined;
 }
 
-function verify(command: string): Promise<{ code: number; duration: number; errorCode?: string }> {
+function verify(command: string): Promise<{ code: number; duration: number; excerpt: string; errorCode?: string }> {
   return new Promise((resolve) => {
     const started = Date.now();
     let settled = false;
+    let tail = Buffer.alloc(0);
+    let truncated = false;
     const child = spawn(process.execPath, [command, ...(command.endsWith("npm-cli.js") ? ["test"] : [])], {
       cwd: process.cwd(), shell: false, stdio: ["ignore", "pipe", "pipe"],
     });
+    const capture = (chunk: Buffer) => {
+      tail = Buffer.concat([tail, chunk]);
+      if (tail.length > 2_048) { tail = tail.subarray(tail.length - 2_048); truncated = true; }
+    };
+    child.stdout.on("data", capture);
+    child.stderr.on("data", capture);
     child.stdout.pipe(process.stdout);
     child.stderr.pipe(process.stderr);
     child.on("error", (error: NodeJS.ErrnoException) => {
-      if (!settled) resolve({ code: 1, duration: Date.now() - started, errorCode: error.code });
+      if (!settled) resolve({ code: 1, duration: Date.now() - started,
+        excerpt: verificationExcerpt(tail, truncated), errorCode: error.code });
       settled = true;
     });
     child.on("close", (code) => {
-      if (!settled) resolve({ code: code ?? 1, duration: Date.now() - started });
+      if (!settled) resolve({ code: code ?? 1, duration: Date.now() - started,
+        excerpt: verificationExcerpt(tail, truncated) });
       settled = true;
     });
   });
@@ -238,6 +248,7 @@ export async function executeWorkflow(taskId: string | undefined, options: Workf
   verificationRuns += 1;
   const result = await verify(command);
   verificationResult = { code: result.code, duration: result.duration };
+  run.verification_exit_code = result.code; run.verification_excerpt = result.excerpt; updateRun(run);
   if (result.errorCode) { markStage(run, "verification", "failed"); return finish(result.errorCode === "EPERM" ? "permission" : "environment"); }
   if (result.code !== 0) { markStage(run, "verification", "failed"); return finish("verification"); }
   markStage(run, "verification", "success");
@@ -294,6 +305,8 @@ export async function executeWorkflow(taskId: string | undefined, options: Workf
     verificationRuns += 1;
     const nextVerification = await verify(command);
     verificationResult = { code: nextVerification.code, duration: nextVerification.duration };
+    run.verification_exit_code = nextVerification.code;
+    run.verification_excerpt = nextVerification.excerpt; updateRun(run);
     if (nextVerification.errorCode) { markStage(run, "verification", "failed"); return finish(nextVerification.errorCode === "EPERM" ? "permission" : "environment"); }
     if (nextVerification.code !== 0) { markStage(run, "verification", "failed"); return escalate("verification", "rework verification failed"); }
     markStage(run, "verification", "success"); markStage(run, "submit", "running");

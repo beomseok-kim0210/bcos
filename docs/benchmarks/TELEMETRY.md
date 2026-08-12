@@ -269,6 +269,11 @@ run artifact에는 실행기를 식별하는 `worker_name` · `worker_version`�
 `--worker`와 `--reviewer` 값이다. 실행 형태는 기존 stdout telemetry의
 `worker_runtime` · `reviewer_runtime`이 계속 나타낸다.
 
+검증이 실행된 run artifact에는 `verification_exit_code`와 `verification_excerpt`도
+남는다. 발췌는 stdout과 stderr를 전달하면서 마지막 2,048바이트만 보관하고, 잘린 경우
+앞에 `…`를 표시하며 저장소 루트와 사용자 홈 절대경로를 각각 `<root>`와 `<home>`으로
+치환한다. 이 두 경로 외의 민감정보를 비식별화하지는 않는다.
+
 ## 공개 지표와의 관계
 
 ## 12. Reviewer Orchestration Metrics

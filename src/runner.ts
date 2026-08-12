@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { buildContextPackage } from "./context.js";
 import { modelCommand, runModel, type ModelResult } from "./model.js";
+import { readRuns } from "./run.js";
 
 const DEFAULT_TIMEOUT_SECONDS = 1_800;
 
@@ -108,7 +109,14 @@ function prepareRun(taskId: string, options: RunWorkerOptions): PreparedRun {
   const previousReview = attempt >= 2 && existsSync(reviewPath)
     ? `\n\n--- REVIEW OF PREVIOUS ATTEMPT ---\n${readFileSync(reviewPath, "utf8")}`
     : "";
-  const stdin = `${buildPreamble(taskId, options.worker, reportPath)}\n\n--- CONTEXT PACKAGE ---\n${contextPackage.output}${previousReview}`;
+  const lastVerification = readRuns(taskId, rootDirectory).filter((record) =>
+    record.stages.verification === "success" || record.stages.verification === "failed").at(-1);
+  const verificationFailure = lastVerification?.stages.verification === "failed"
+    && lastVerification.verification_exit_code !== undefined
+    && lastVerification.verification_excerpt !== undefined
+    ? `\n\n--- PREVIOUS HOST VERIFICATION FAILURE ---\ncommand: ${lastVerification.verification_command}\nexit code: ${lastVerification.verification_exit_code}\n${lastVerification.verification_excerpt}`
+    : "";
+  const stdin = `${buildPreamble(taskId, options.worker, reportPath)}\n\n--- CONTEXT PACKAGE ---\n${contextPackage.output}${previousReview}${verificationFailure}`;
   const command = modelCommand({ runtime: "codex", cwd: rootDirectory, commandOverride: options.workerCommand });
   if (!command.command) throw new Error(options.workerCommand
     ? `Worker command does not exist: ${options.workerCommand}`
