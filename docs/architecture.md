@@ -73,6 +73,7 @@ bcos/
 │   ├── tasks/                # 진실 원천 — manager 소유
 │   ├── reports/              # worker 소유
 │   ├── reviews/              # reviewer 소유
+│   ├── amendments/           # 동결된 Task 명세의 정정 — human 소유
 │   ├── runs/                 # workflow 실행 관찰 기록
 │   └── prompts/              # 부트스트랩 전용. CLI 완성 시 삭제
 ├── docs/bootstrap/           # 부트스트랩 전용. CLI 완성 시 삭제

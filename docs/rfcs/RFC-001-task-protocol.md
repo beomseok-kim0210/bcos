@@ -142,7 +142,52 @@ blocked_reason: ...    # status가 BLOCKED일 때만 필수
 > Task 본문과 `title`은 **첫 `TASK_STARTED` 시점에 동결된다.**
 > 이후 변경 가능한 필드는 `status`, `attempt`, `updated`, `blocked_reason`뿐이다.
 
-동결 전에는 자유롭게 다듬어도 된다. 동결 후 명세를 바꿔야 하면 **새 Task를 만든다.**
+동결 전에는 자유롭게 다듬어도 된다.
+
+**동결 후 명세 결함을 고치려고 원본을 수정하지 않는다** (**MUST NOT**).
+원본 Task는 감사 기록의 일부이며 **무엇이 잘못 적혀 있었는지가 보존되어야 한다.**
+정정은 원본을 바꾸지 않고 §2.4 Amendment로 한다.
+의도한 작업 자체가 달라지면 정정이 아니므로 **새 Task를 만든다.**
+
+### 2.4 Amendment — 동결된 명세의 정정
+
+**소유자: `human`.** 경로 `.bcos/amendments/<task-id>-A<nnn>.md`. **Append-only.**
+
+Amendment는 **동결된 Task의 명세 결함을 원본을 바꾸지 않고 정정하는 별도 아티팩트**다.
+
+frontmatter는 `task` · `amendment` · `attempt` · `created` · `proposed_by` · `approved_by`.
+본문은 `## Superseded` `## Original` `## Corrected` `## Reason` `## Evidence`.
+
+**effective 조건 — 전부 MUST.** 다음 넷은 **구현이 검사한다.**
+하나라도 어기면 effective하지 않으며, **오류가 아니라 무시된다.**
+
+- `task`가 대상 Task와 일치한다
+- `approved_by`가 비어 있지 않다
+- `proposed_by`와 `approved_by`가 **서로 다르다** — G5를 정정에 적용한 것이다
+- `## Superseded`가 원본 Task에 **실제로 존재하는** AC를 하나 이상 가리킨다
+
+다음은 **MUST이지만 구현이 검사하지 않는다** — §7의 자기 신고 한계와 같은 성격이며,
+Reviewer가 확인한다.
+
+- `proposed_by`가 비어 있지 않다
+- `approved_by`는 `human`이다
+
+```
+Effective Contract = 동결된 원본 Task + effective Amendment(들)
+```
+
+**한 Actor가 자기 정정을 스스로 권위 있게 만들 수 없다.** 제안과 승인은 분리된다.
+`actor_id`가 자기 신고라는 §7의 한계는 여기에도 그대로 적용된다 —
+감사 가능한 논리적 경계이지 인증이 아니다.
+
+**Amendment로 할 수 없는 것 (MUST NOT)** — 요구 추가 · 범위 확대 · 새 기능 도입 ·
+AC 완화 · 실패한 검증을 통과시키기 위한 기준 하향 · 이력 재작성.
+
+**정정과 범위 변경의 판별 기준 한 줄** — 정정 후 **Task의 목적이 그대로인가.**
+목적이 달라지면 Amendment가 아니라 새 Task다 (§2.3).
+
+**이 판별은 사람이 한다.** 구현은 위 네 조건(형식·참조 무결성)만 검사하며,
+정정인지 범위 확대인지는 **판정하지 않는다.**
 
 ---
 
@@ -177,11 +222,11 @@ frontmatter는 `task: <id>` 하나다. 본문은 attempt마다 다음 항목을 
 
 판정은 3개다 — `APPROVED` · `CHANGES_REQUESTED` · `BLOCKED`
 
-frontmatter는 `task: <id>` 하나다. 본문은 attempt마다 다음 항목을 가진다.
+frontmatter는 `task: <id>` 하나다. 본문의 판정 항목은 다음 형태다.
 
 ```
 ## Attempt <n> — <RFC 3339> — <VERDICT>
-### Criteria Assessment  AC별 표: 번호 / 기준 / PASS·FAIL / 근거
+### Criteria Assessment  AC별 표: 번호 / 기준 / PASS·FAIL·SUPERSEDED / 근거
 ### Findings             아키텍처 정합성, Out of Scope 침범, 증거의 실재 여부
 ### Required Changes     CHANGES_REQUESTED일 때 필수. 번호 매긴 실행 가능한 지시
 ### Verdict              판정 값
@@ -194,6 +239,21 @@ frontmatter는 `task: <id>` 하나다. 본문은 attempt마다 다음 항목을 
 - `APPROVED`인데 `FAIL` 항목이 있으면 모순이다 (`E_SCHEMA`).
 - `CHANGES_REQUESTED`인데 `Required Changes`가 비어 있으면 무효다 (`E_SCHEMA`).
 - **증거 없는 완료 주장은 `CHANGES_REQUESTED`로 판정한다** (**MUST**).
+
+**`SUPERSEDED`** — effective Amendment(§2.4)가 그 AC를 정정했다는 뜻이다.
+근거 Amendment를 **명시한다**. 원본 AC는 동결된 Task에 그대로 남고 승인 요건에서만 빠진다.
+**`PASS`가 아니며 삭제도 아니다.** 따라서 `FAIL`이 아니고 위 `E_SCHEMA` 규칙에 걸리지 않는다.
+**구현은 Review 표를 읽지 않는다** — `SUPERSEDED` 표기가 실제 Amendment와 맞는지는
+Reviewer가 확인한다.
+
+**여러 판정 항목** — Review는 append-only이므로 같은 attempt에 판정 항목이 **여럿일 수 있다.**
+그 attempt의 권위 있는 판정은 **마지막 유효 판정 항목**이다.
+앞선 판정은 **수정하거나 삭제하지 않는다** (**MUST NOT**) — 무엇이 왜 막혔었는지가 기록으로 남는다.
+
+**`BLOCKED` 판정은 lifecycle 전이를 일으키지 않는다.** Task는 있던 상태에 그대로 머문다.
+worker 재작업만으로는 해결할 수 없어 **승인을 진행할 수 없다는 기록**이며,
+§1.1의 `BLOCKED` **상태**(§1.2 `block` 전이로만 진입)와는 다른 것이다.
+원인이 해소되면 같은 attempt에 후속 판정 항목을 덧붙인다.
 
 ### 4.1 Review Ponytail
 
@@ -258,11 +318,21 @@ JSON Lines. UTF-8, LF, 파일 끝에 개행. **Append-only** — 기존 줄의 �
 | `.bcos/tasks/` | `manager` | 읽기만 |
 | `.bcos/reports/` | `worker` | 읽기만 |
 | `.bcos/reviews/` | `reviewer` | 읽기만 |
+| `.bcos/amendments/` | `human` | 읽기만 |
 | `.bcos/events.jsonl`, `state.json` | `runtime` | **직접 편집 금지** |
 | `docs/`, `CLAUDE.md`, `AGENTS.md` | `manager` | 읽기만 |
 | `src/`, `tests/` | `worker` | 읽기만 |
 
 `human`은 모든 경로에 쓸 수 있다. 단 G5(SoD)는 `human`에게도 적용된다.
+
+**소유는 결정 권한이다. 파일 쓰기 권한과 같은 개념이 아니다.**
+소유자는 Task의 `Expected Files`(§2.2 — 읽고 쓸 파일의 **상한**)에 경로를 명시해
+**그 Task 한정으로** 쓰기를 위임할 수 있다. 위임은 소유를 옮기지 않는다 —
+위임 자체가 소유자가 작성한 Task 안에서 일어나고, `Expected Files` 밖의 파일은
+여전히 쓸 수 없다. 명시되지 않은 경로에 대해서는 표의 `읽기만`이 그대로 적용된다.
+
+**규범 문서 자체는 위임 대상이 아니다** — 이 RFC의 변경은 프로토콜 결정이므로
+소유자가 판단한다. Task가 이 문서를 `Expected Files`에 넣을 때는 **읽기 전용**이다.
 
 - **OR-1** 소유 role이 아니면 본문을 수정하지 않는다. 상태 필드는 프로토콜 연산으로만 바꾼다.
 - **OR-2** `events.jsonl`과 `state.json`은 어떤 Actor도 직접 편집하지 않는다.
