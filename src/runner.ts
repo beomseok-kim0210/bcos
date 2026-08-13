@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { buildContextPackage } from "./context.js";
-import { modelCommand, runModel, type ModelResult } from "./model.js";
+import { modelCommand, runModel, type ModelResult, type ModelRuntime } from "./model.js";
 import { readRuns } from "./run.js";
 
 const DEFAULT_TIMEOUT_SECONDS = 1_800;
@@ -29,6 +29,7 @@ type PreparedRun = {
   contextSha256: string;
   stdin: string;
   version: string;
+  runtimeKind: "node" | "native";
 };
 
 function sha256(value: string): string {
@@ -72,7 +73,8 @@ function headerNumber(output: string, key: string): number {
 }
 
 function prepareRun(taskId: string, options: RunWorkerOptions): PreparedRun {
-  if (options.worker !== "codex") throw new Error(`Unsupported worker: ${options.worker}`);
+  if (options.worker !== "codex" && options.worker !== "claude") throw new Error(`Unsupported worker: ${options.worker}`);
+  const runtime = options.worker as ModelRuntime;
   const timeoutSeconds = options.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS;
   if (!Number.isInteger(timeoutSeconds) || timeoutSeconds <= 0) {
     throw new Error("--timeout must be a positive integer");
@@ -117,10 +119,10 @@ function prepareRun(taskId: string, options: RunWorkerOptions): PreparedRun {
     ? `\n\n--- PREVIOUS HOST VERIFICATION FAILURE ---\ncommand: ${lastVerification.verification_command}\nexit code: ${lastVerification.verification_exit_code}\n${lastVerification.verification_excerpt}`
     : "";
   const stdin = `${buildPreamble(taskId, options.worker, reportPath)}\n\n--- CONTEXT PACKAGE ---\n${contextPackage.output}${previousReview}${verificationFailure}`;
-  const command = modelCommand({ runtime: "codex", cwd: rootDirectory, commandOverride: options.workerCommand });
+  const command = modelCommand({ runtime, cwd: rootDirectory, commandOverride: options.workerCommand });
   if (!command.command) throw new Error(options.workerCommand
     ? `Worker command does not exist: ${options.workerCommand}`
-    : "Cannot find the Codex JavaScript entry point on PATH");
+    : `Cannot find the ${options.worker} entry point on PATH`);
   return {
     command: command.command, args: command.args,
     cwd: rootDirectory,
@@ -134,6 +136,7 @@ function prepareRun(taskId: string, options: RunWorkerOptions): PreparedRun {
     contextSha256: sha256(contextPackage.output),
     stdin,
     version: command.version,
+    runtimeKind: command.runtimeKind,
   };
 }
 
@@ -141,7 +144,7 @@ function telemetry(prepared: PreparedRun, values: Record<string, string | number
   const fields: Record<string, string | number | boolean> = {
     task_id: prepared.taskId,
     worker_name: prepared.worker,
-    worker_runtime: "node",
+    worker_runtime: prepared.runtimeKind,
     context_files: prepared.contextFileCount,
     context_bytes: prepared.contextBytes,
     context_lines: prepared.contextLines,
@@ -174,9 +177,9 @@ export async function runCodexWorker(taskId: string, options: RunWorkerOptions):
   if (options.dryRun) {
     printDryRun(prepared);
     return { exitCode: 0, durationMs: 0, stdoutBytes: 0, stderrBytes: 0, timedOut: false,
-      runtime: "codex", runtimeKind: "node", version: prepared.version };
+      runtime: options.worker as ModelRuntime, runtimeKind: prepared.runtimeKind, version: prepared.version };
   }
-  const result = await runModel({ runtime: "codex", cwd: prepared.cwd, stdin: prepared.stdin,
+  const result = await runModel({ runtime: options.worker as ModelRuntime, cwd: prepared.cwd, stdin: prepared.stdin,
     timeoutSeconds: prepared.timeoutSeconds, commandOverride: options.workerCommand,
     env: { ...process.env, BCOS_WORKER_SESSION: "1" }, onTimeout: options.onTimeout });
   if (result.error) console.error(`Worker failed to start${result.errorCode ? `: ${result.errorCode}` : ""}`);

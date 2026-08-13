@@ -168,7 +168,7 @@ export async function executeWorkflow(taskId: string | undefined, options: Workf
     return finish(probeError.code === "EPERM" ? "permission" : "environment", "Child process creation is unavailable.");
   }
   if (!taskId || !options.worker || !options.actorId) return finish("protocol", "Task id, --worker, and --actor-id are required");
-  if (options.worker !== "codex") return finish("protocol", `Unsupported worker: ${options.worker}`);
+  if (options.worker !== "codex" && options.worker !== "claude") return finish("protocol", `Unsupported worker: ${options.worker}`);
   if (options.timeoutSeconds !== undefined && (!Number.isInteger(options.timeoutSeconds) || options.timeoutSeconds <= 0)) {
     return finish("protocol", "--timeout must be a positive integer");
   }

@@ -2,10 +2,10 @@
 protocol: "0.1"
 id: T-015
 title: Let the same Task run through either worker runtime without changing any other semantics
-status: TODO
-attempt: 0
+status: DONE
+attempt: 1
 created: 2026-08-12T06:30:00Z
-updated: 2026-08-12T06:30:00Z
+updated: 2026-08-13T04:15:58.558Z
 ---
 
 # T-015 — Multi-model Worker Switching

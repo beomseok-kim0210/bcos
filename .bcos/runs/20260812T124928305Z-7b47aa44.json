@@ -1,0 +1,26 @@
+{
+  "execution_id": "20260812T124928305Z-7b47aa44",
+  "task_id": "T-015",
+  "attempt": 1,
+  "started_at": "2026-08-12T12:49:28.305Z",
+  "updated_at": "2026-08-12T12:57:36.215Z",
+  "workflow_status": "success",
+  "stages": {
+    "start": "success",
+    "worker": "success",
+    "report_check": "success",
+    "verification": "success",
+    "submit": "success",
+    "review": "not_started",
+    "approve": "not_started",
+    "request_changes": "not_started"
+  },
+  "verification_command": "npm-test",
+  "current_stage": "submit",
+  "worker_name": "codex",
+  "worker_version": "0.147.0",
+  "verification_exit_code": 0,
+  "verification_excerpt": "…\n JavaScript Codex override as node (3.1512ms)\n✔ model adapter prepares the unchanged Claude argv (2.8478ms)\n✔ model adapter identifies a native Claude override as native (0.4556ms)\n✔ model adapter identifies a JavaScript Claude override as node (2.7848ms)\nexact-input✔ model adapter delivers worker stdin unchanged (94.432ms)\nreview-input✔ model adapter delivers reviewer stdin unchanged (86.2837ms)\n<home>\\AppData\\Local\\Temp\\bcos-model-e5Z1Fm\n✔ model adapter runs a worker at the requested cwd (87.7176ms)\n<home>\\AppData\\Local\\Temp\\bcos-model-uCYuUA\n✔ model adapter runs a reviewer at the requested cwd (83.1316ms)\n1\n✔ model adapter passes the worker session environment (92.5939ms)\n✔ model adapter can omit the worker session environment for review (90.9628ms)\nabc✔ model adapter observes reviewer stdout bytes (89.2357ms)\n✔ model adapter observes reviewer stderr bytes (91.59ms)\nx✔ model adapter observes reviewer first response (91.0868ms)\n✔ model adapter omits first response when there is no output (92.0308ms)\n✔ model adapter reports worker exit zero (77.4431ms)\n✔ model adapter reports worker nonzero exit (81.1109ms)\n✔ model adapter reports reviewer nonzero exit (85.456ms)\n✔ model adapter kills and marks worker timeout (1049.8203ms)\n✔ model adapter kills and marks reviewer timeout (1033.2662ms)\n✔ model adapter reports a missing executable as not_found (0.4046ms)\n✔ model adapter distinguishes spawn failure from nonzero exit (3.4837ms)\n✔ model adapter does not use a shell for metacharacters (85.4614ms)\n✔ model adapter results contain no command absolute path (80.4692ms)\n✔ model adapter returns the selected runtime (79.7414ms)\n✔ model adapter reports override version without probing (100.0577ms)\n✔ model adapter uses one common result shape for both runtimes (155.3634ms)\n✔ model adapter result durations are nonnegative integers (78.6073ms)\nabcd\nℹ tests 272\nℹ suites 0\nℹ pass 272\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 97470.7\n",
+  "completed_at": "2026-08-12T12:57:36.215Z",
+  "workflow_exit_reason": "success"
+}

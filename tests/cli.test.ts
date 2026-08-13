@@ -1167,8 +1167,12 @@ process.stdin.on("end", () => {
 }
 
 function runWorker(directory, workerPath, id = "T-200", ...extraArguments) {
+  return runWorkerAs(directory, workerPath, id, "codex", ...extraArguments);
+}
+
+function runWorkerAs(directory, workerPath, id, worker, ...extraArguments) {
   return spawnSync(process.execPath, [
-    cli, "task", "run", id, "--worker", "codex", "--worker-command", workerPath,
+    cli, "task", "run", id, "--worker", worker, "--worker-command", workerPath,
     ...extraArguments,
   ], { cwd: directory, encoding: "utf8", timeout: 5_000 });
 }
@@ -1564,13 +1568,84 @@ test("task run rejects unsupported workers without changes", () => {
   withRunnerFixture((fixture_) => {
     const before = bcosSnapshot(fixture_.directory);
     const result = spawnSync(process.execPath, [
-      cli, "task", "run", fixture_.id, "--worker", "claude", "--worker-command", fixture_.workerPath,
+      cli, "task", "run", fixture_.id, "--worker", "other", "--worker-command", fixture_.workerPath,
     ], { cwd: fixture_.directory, encoding: "utf8" });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /Unsupported worker/);
     assert.deepEqual(bcosSnapshot(fixture_.directory), before);
   });
 });
+
+test("task run accepts a Claude worker", () => withRunnerFixture((fixture_) => {
+  const result = runWorkerAs(fixture_.directory, fixture_.workerPath, fixture_.id, "claude");
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(/^argv:(.+)$/m.exec(result.stdout)?.[1]), ["-p", "--output-format", "text"]);
+}));
+
+test("Claude task run forwards stdout and stderr", () => withRunnerFixture((fixture_) => {
+  const result = runWorkerAs(fixture_.directory, fixture_.workerPath, fixture_.id, "claude");
+  assert.match(result.stdout, /stdin-sha256:/);
+  assert.match(result.stderr, /fake-worker-stderr/);
+}));
+
+test("Claude task run reports a nonzero exit unchanged", () => withRunnerFixture((fixture_) => {
+  const result = runWorkerAs(fixture_.directory, fixture_.workerPath, fixture_.id, "claude");
+  assert.equal(result.status, 3);
+  assert.equal(telemetryValues(result.stdout).worker_exit_code, "3");
+}, { workerExitCode: 3 }));
+
+test("Claude task run kills and marks a timeout", () => withRunnerFixture((fixture_) => {
+  const result = runWorkerAs(fixture_.directory, fixture_.workerPath, fixture_.id, "claude", "--timeout", "1");
+  assert.equal(result.status, 1);
+  assert.equal(telemetryValues(result.stdout).worker_timed_out, "true");
+}, { workerDelay: 2_000 }));
+
+test("worker runtimes receive stdin differing only in the preamble worker line", () => withRunnerFixture((fixture_) => {
+  assert.equal(runWorkerAs(fixture_.directory, fixture_.workerPath, fixture_.id, "codex").status, 0);
+  const codexInput = readFileSync(path.join(fixture_.directory, "received.txt"), "utf8");
+  assert.equal(runWorkerAs(fixture_.directory, fixture_.workerPath, fixture_.id, "claude").status, 0);
+  const claudeInput = readFileSync(path.join(fixture_.directory, "received.txt"), "utf8");
+  const codexLines = codexInput.split("\n"); const claudeLines = claudeInput.split("\n");
+  const differences = codexLines.flatMap((line, index) => line === claudeLines[index] ? [] : [[line, claudeLines[index]]]);
+  assert.deepEqual(differences, [["  worker: codex", "  worker: claude"]]);
+}));
+
+test("worker runtimes use the same Context Package SHA-256", () => withRunnerFixture((fixture_) => {
+  const codex = runWorkerAs(fixture_.directory, fixture_.workerPath, fixture_.id, "codex", "--dry-run");
+  const claude = runWorkerAs(fixture_.directory, fixture_.workerPath, fixture_.id, "claude", "--dry-run");
+  assert.equal(summaryValue(codex.stdout, "Context SHA-256"), summaryValue(claude.stdout, "Context SHA-256"));
+}));
+
+test("review feedback is delivered unchanged to a Claude worker", () => withRunnerFixture((fixture_) => {
+  const taskPath = path.join(fixture_.directory, ".bcos", "tasks", `${fixture_.id}-runner.md`);
+  writeFileSync(taskPath, readFileSync(taskPath, "utf8").replace(/^attempt: 1$/m, "attempt: 2"), "utf8");
+  const reviews = path.join(fixture_.directory, ".bcos", "reviews"); mkdirSync(reviews);
+  writeFileSync(path.join(reviews, `${fixture_.id}-runner.md`), "same review feedback\n", "utf8");
+  runWorkerAs(fixture_.directory, fixture_.workerPath, fixture_.id, "claude");
+  assert.match(readFileSync(path.join(fixture_.directory, "received.txt"), "utf8"),
+    /--- REVIEW OF PREVIOUS ATTEMPT ---\nsame review feedback/);
+}));
+
+test("verification failure feedback is delivered unchanged to a Claude worker", () => withRunnerFixture((fixture_) => {
+  writeVerificationRun(fixture_, "failed", { excerpt: "same verification feedback\n" });
+  runWorkerAs(fixture_.directory, fixture_.workerPath, fixture_.id, "claude");
+  assert.match(readFileSync(path.join(fixture_.directory, "received.txt"), "utf8"),
+    /--- PREVIOUS HOST VERIFICATION FAILURE ---[\s\S]*same verification feedback/);
+}));
+
+test("a missing Claude worker fails without falling back to Codex", () => withRunnerFixture((fixture_) => {
+  const missing = path.join(fixture_.directory, "missing-claude.js");
+  const result = runWorkerAs(fixture_.directory, missing, fixture_.id, "claude");
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Worker command does not exist/);
+  assert.equal(existsSync(path.join(fixture_.directory, "received.txt")), false);
+}));
+
+test("Claude dry-run reports the selected native execution form", () => withRunnerFixture((fixture_) => {
+  const result = runWorkerAs(fixture_.directory, process.execPath, fixture_.id, "claude", "--dry-run");
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(telemetryValues(result.stdout).worker_runtime, "native");
+}));
 
 test("task run rejects a nonexistent worker command without changes", () => {
   withRunnerFixture((fixture_) => {
@@ -1719,8 +1794,12 @@ process.stdin.on("end", () => setTimeout(() => {
 }
 
 function runExecute(fixture_, extra = [], environment = {}) {
+  return runExecuteAs(fixture_, "codex", extra, environment);
+}
+
+function runExecuteAs(fixture_, worker, extra = [], environment = {}) {
   return spawnSync(process.execPath, [
-    cli, "task", "execute", fixture_.id, "--worker", "codex", "--actor-id", "workflow-actor",
+    cli, "task", "execute", fixture_.id, "--worker", worker, "--actor-id", "workflow-actor",
     "--worker-command", fixture_.workerPath, "--verify-command", fixture_.verifierPath, ...extra,
   ], { cwd: fixture_.directory, encoding: "utf8", timeout: 8_000, env: { ...process.env, ...environment } });
 }
@@ -1766,6 +1845,46 @@ test("task execute reports successful workflow telemetry", () => withWorkflowFix
 
 test("task execute sends the BCOS worker-session marker", () => withWorkflowFixture((fixture_) => {
   assert.match(runExecute(fixture_).stdout, /^worker-session:1$/m);
+}));
+
+test("task execute accepts a Claude worker", () => withWorkflowFixture((fixture_) => {
+  const result = runExecuteAs(fixture_, "claude");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(readFileSync(path.join(fixture_.directory, ".bcos", "tasks", fixture_.taskName), "utf8"),
+    /^status: IMPLEMENTED$/m);
+}));
+
+test("Claude task execute records worker_name in the run artifact", () => withWorkflowFixture((fixture_) => {
+  assert.equal(runExecuteAs(fixture_, "claude").status, 0);
+  assert.equal(workflowRun(fixture_).worker_name, "claude");
+}));
+
+test("Claude task execute records the worker version", () => withWorkflowFixture((fixture_) => {
+  assert.equal(runExecuteAs(fixture_, "claude").status, 0);
+  assert.equal(workflowRun(fixture_).worker_version, "override");
+}));
+
+test("Claude task execute receives the worker-session marker", () => withWorkflowFixture((fixture_) => {
+  assert.match(runExecuteAs(fixture_, "claude").stdout, /^worker-session:1$/m);
+}));
+
+test("worker switching between attempts is reconstructable from run artifacts", () => withWorkflowFixture((fixture_) => {
+  assert.equal(runExecuteAs(fixture_, "codex").status, 0);
+  const taskPath = path.join(fixture_.directory, ".bcos", "tasks", fixture_.taskName);
+  const task = readFileSync(taskPath, "utf8").replace(/^status: IMPLEMENTED$/m, "status: IN_PROGRESS")
+    .replace(/^attempt: 1$/m, "attempt: 2");
+  writeFileSync(taskPath, task, "utf8");
+  assert.equal(runExecuteAs(fixture_, "claude").status, 0);
+  const records = workflowRunFiles(fixture_).map(name => workflowRun(fixture_, name));
+  assert.deepEqual(records.map(record => [record.attempt, record.worker_name]), [[1, "codex"], [2, "claude"]]);
+}));
+
+test("worker can switch after verification failure in the same attempt", () => withWorkflowFixture((fixture_) => {
+  assert.equal(runExecuteAs(fixture_, "codex", [], { VERIFY_EXIT: "4" }).status, 1);
+  assert.equal(runExecuteAs(fixture_, "claude").status, 0);
+  const records = workflowRunFiles(fixture_).map(name => workflowRun(fixture_, name));
+  assert.deepEqual(records.map(record => [record.attempt, record.worker_name]), [[1, "codex"], [1, "claude"]]);
+  assert.deepEqual(workflowEvents(fixture_).map(event => event.event), ["TASK_STARTED", "TASK_SUBMITTED"]);
 }));
 
 test("task execute rejects a nested worker before lifecycle changes", () => withWorkflowFixture((fixture_) => {
@@ -1944,7 +2063,7 @@ test("task execute requires worker and actor id", () => withWorkflowFixture((fix
 }));
 
 test("task execute rejects unsupported workers", () => withWorkflowFixture((fixture_) => {
-  const result = spawnSync(process.execPath, [cli, "task", "execute", fixture_.id, "--worker", "claude", "--actor-id", "a"], { cwd: fixture_.directory, encoding: "utf8" });
+  const result = spawnSync(process.execPath, [cli, "task", "execute", fixture_.id, "--worker", "other", "--actor-id", "a"], { cwd: fixture_.directory, encoding: "utf8" });
   assert.equal(result.status, 1);
   assert.equal(telemetryValues(result.stdout).workflow_exit_reason, "protocol");
 }));
