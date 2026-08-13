@@ -2,10 +2,11 @@
 protocol: "0.1"
 id: T-016
 title: Capture comparable raw benchmark trials without claiming efficiency
-status: TODO
-attempt: 0
+status: BLOCKED
+attempt: 1
 created: 2026-08-13T05:10:00Z
-updated: 2026-08-13T05:10:00Z
+updated: 2026-08-13T13:21:02.812Z
+blocked_reason: context parser does not recognize the T-016 Write List boundary label
 ---
 
 # T-016 — Benchmark Trial Record

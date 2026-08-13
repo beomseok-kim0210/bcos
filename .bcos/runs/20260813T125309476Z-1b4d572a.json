@@ -1,0 +1,22 @@
+{
+  "execution_id": "20260813T125309476Z-1b4d572a",
+  "task_id": "T-016",
+  "attempt": 1,
+  "started_at": "2026-08-13T12:53:09.476Z",
+  "updated_at": "2026-08-13T12:53:09.706Z",
+  "workflow_status": "failed",
+  "stages": {
+    "start": "success",
+    "worker": "failed",
+    "report_check": "not_started",
+    "verification": "not_started",
+    "submit": "not_started",
+    "review": "not_started",
+    "approve": "not_started",
+    "request_changes": "not_started"
+  },
+  "verification_command": "npm-test",
+  "current_stage": "worker",
+  "completed_at": "2026-08-13T12:53:09.706Z",
+  "workflow_exit_reason": "protocol"
+}

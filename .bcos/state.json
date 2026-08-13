@@ -8,8 +8,8 @@
     "IN_PROGRESS": 0,
     "IMPLEMENTED": 0,
     "DONE": 16,
-    "BLOCKED": 0
+    "BLOCKED": 1
   },
   "current_task": null,
-  "updated": "2026-08-13T04:15:58.558Z"
+  "updated": "2026-08-13T13:21:02.812Z"
 }
