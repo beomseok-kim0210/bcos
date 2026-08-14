@@ -109,6 +109,13 @@ export async function executeWorkflow(taskId: string | undefined, options: Workf
   let feedbackHandoffs = 0;
   let approved = false;
   let run: RunRecord | undefined;
+  const recordWorker = (result: Awaited<ReturnType<typeof runCodexWorker>>) => {
+    if (!run) return;
+    run.worker_invocations = (run.worker_invocations ?? 0) + 1; run.context_files = (run.context_files ?? 0) + result.contextFiles;
+    run.context_chars = (run.context_chars ?? 0) + result.contextChars; run.context_bytes = (run.context_bytes ?? 0) + result.contextBytes; run.stdin_bytes = (run.stdin_bytes ?? 0) + result.stdinBytes;
+    run.worker_stdout_bytes = (run.worker_stdout_bytes ?? 0) + result.stdoutBytes; run.worker_stderr_bytes = (run.worker_stderr_bytes ?? 0) + result.stderrBytes;
+    run.worker_duration_ms = (run.worker_duration_ms ?? 0) + result.durationMs; updateRun(run);
+  };
   const nested = process.env.BCOS_WORKER_SESSION !== undefined;
   const finish = (reason: ExitReason, message?: string) => {
     if (message) console.error(message);
@@ -129,11 +136,14 @@ export async function executeWorkflow(taskId: string | undefined, options: Workf
       if (run.current_stage) fields.current_stage = run.current_stage;
       fields.stage_status = run.current_stage ? run.stages[run.current_stage] : "not_started";
       fields.run_record_path = path.join(".bcos", "runs", `${run.execution_id}.json`);
+      for (const key of ["worker_invocations", "context_files", "context_chars", "context_bytes", "stdin_bytes",
+        "worker_stdout_bytes", "worker_stderr_bytes", "worker_duration_ms", "verification_duration_ms"] as const) {
+        if (run[key] !== undefined) fields[key] = run[key]; }
     }
     if (verificationCommand) fields.verification_command = verificationCommand;
     if (verificationResult) {
       fields.verification_exit_code = verificationResult.code;
-      fields.verification_duration_ms = verificationResult.duration;
+      fields.verification_duration_ms = run?.verification_duration_ms ?? verificationResult.duration;
     }
     if (options.review) {
       fields.reviewer_name = options.reviewer ?? "";
@@ -233,6 +243,7 @@ export async function executeWorkflow(taskId: string | undefined, options: Workf
       markStage(run, "worker", "failed");
       return finish("protocol", error instanceof Error ? error.message : String(error));
     }
+    recordWorker(workerResult);
     run.worker_name = workerResult.runtime; run.worker_version = workerResult.version; updateRun(run);
     if (workerResult.errorCode) { markStage(run, "worker", "failed");
       return finish(workerResult.errorCode === "EPERM" ? "permission" : "environment"); }
@@ -248,7 +259,8 @@ export async function executeWorkflow(taskId: string | undefined, options: Workf
   verificationRuns += 1;
   const result = await verify(command);
   verificationResult = { code: result.code, duration: result.duration };
-  run.verification_exit_code = result.code; run.verification_excerpt = result.excerpt; updateRun(run);
+  run.verification_exit_code = result.code; run.verification_excerpt = result.excerpt;
+  run.verification_duration_ms = (run.verification_duration_ms ?? 0) + result.duration; updateRun(run);
   if (result.errorCode) { markStage(run, "verification", "failed"); return finish(result.errorCode === "EPERM" ? "permission" : "environment"); }
   if (result.code !== 0) { markStage(run, "verification", "failed"); return finish("verification"); }
   markStage(run, "verification", "success");
@@ -294,6 +306,7 @@ export async function executeWorkflow(taskId: string | undefined, options: Workf
     const workerResult = await runCodexWorker(taskId, { worker: options.worker, dryRun: false,
       timeoutSeconds: options.timeoutSeconds, workerCommand: options.workerCommand,
       onTimeout: () => { timedOut = true; } });
+    recordWorker(workerResult);
     run.worker_name = workerResult.runtime; run.worker_version = workerResult.version; updateRun(run);
     runners += 1;
     if (workerResult.errorCode) { markStage(run, "worker", "failed");
@@ -306,7 +319,8 @@ export async function executeWorkflow(taskId: string | undefined, options: Workf
     const nextVerification = await verify(command);
     verificationResult = { code: nextVerification.code, duration: nextVerification.duration };
     run.verification_exit_code = nextVerification.code;
-    run.verification_excerpt = nextVerification.excerpt; updateRun(run);
+    run.verification_excerpt = nextVerification.excerpt;
+    run.verification_duration_ms = (run.verification_duration_ms ?? 0) + nextVerification.duration; updateRun(run);
     if (nextVerification.errorCode) { markStage(run, "verification", "failed"); return finish(nextVerification.errorCode === "EPERM" ? "permission" : "environment"); }
     if (nextVerification.code !== 0) { markStage(run, "verification", "failed"); return escalate("verification", "rework verification failed"); }
     markStage(run, "verification", "success"); markStage(run, "submit", "running");

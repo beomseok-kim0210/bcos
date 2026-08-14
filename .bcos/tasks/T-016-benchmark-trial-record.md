@@ -2,10 +2,10 @@
 protocol: "0.1"
 id: T-016
 title: Capture comparable raw benchmark trials without claiming efficiency
-status: TODO
-attempt: 1
+status: DONE
+attempt: 2
 created: 2026-08-13T05:10:00Z
-updated: 2026-08-14T03:58:38.409Z
+updated: 2026-08-14T08:43:49.485Z
 ---
 
 # T-016 — Benchmark Trial Record

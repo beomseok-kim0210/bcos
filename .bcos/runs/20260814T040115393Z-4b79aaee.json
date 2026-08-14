@@ -1,0 +1,26 @@
+{
+  "execution_id": "20260814T040115393Z-4b79aaee",
+  "task_id": "T-016",
+  "attempt": 2,
+  "started_at": "2026-08-14T04:01:15.393Z",
+  "updated_at": "2026-08-14T04:11:38.136Z",
+  "workflow_status": "failed",
+  "stages": {
+    "start": "success",
+    "worker": "success",
+    "report_check": "success",
+    "verification": "failed",
+    "submit": "not_started",
+    "review": "not_started",
+    "approve": "not_started",
+    "request_changes": "not_started"
+  },
+  "verification_command": "npm-test",
+  "current_stage": "verification",
+  "worker_name": "codex",
+  "worker_version": "0.147.0",
+  "verification_exit_code": 1,
+  "verification_excerpt": "…\nit\":\"not_started\",\"review\":\"not_started\",\"approve\":\"not_started\",\"request_changes\":\"not_started\"},\"verification_command\":\"custom-verifier\",\"current_stage\":\"worker\",\"worker_invocations\":1,\"context_files\":2,\"context_chars\":488,\"context_bytes\":726,\"stdin_bytes\":1583,\"worker_stdout_bytes\":17,\"worker_stderr_bytes\":0,\"worker_duration_ms\":104,\"worker_name\":\"codex\",\"worker_version\":\"override\",\"completed_at\":\"2026-08-14T04:11:31.364Z\",\"workflow_exit_reason\":\"worker_nonzero\"}'\n  \n      at file:///<root>/tests/cli.test.ts:2545:75\n      at withWorkflowFixture (file:///<root>/tests/cli.test.ts:1898:9)\n      at TestContext.<anonymous> (file:///<root>/tests/cli.test.ts:2543:81)\n      at Test.runInAsyncScope (node:async_hooks:214:14)\n      at Test.run (node:internal/test_runner/test:1106:25)\n      at Test.processPendingSubtests (node:internal/test_runner/test:788:18)\n      at Test.postRun (node:internal/test_runner/test:1235:19)\n      at Test.run (node:internal/test_runner/test:1163:12)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:788:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: '{\"execution_id\":\"20260814T041131116Z-f21693fb\",\"task_id\":\"T-300\",\"attempt\":1,\"started_at\":\"2026-08-14T04:11:31.116Z\",\"updated_at\":\"2026-08-14T04:11:31.364Z\",\"workflow_status\":\"failed\",\"stages\":{\"start\":\"success\",\"worker\":\"failed\",\"report_check\":\"not_started\",\"verification\":\"not_started\",\"submit\":\"not_started\",\"review\":\"not_started\",\"approve\":\"not_started\",\"request_changes\":\"not_started\"},\"verification_command\":\"custom-verifier\",\"current_stage\":\"worker\",\"worker_invocations\":1,\"context_files\":2,\"context_chars\":488,\"context_bytes\":726,\"stdin_bytes\":1583,\"worker_stdout_bytes\":17,\"worker_stderr_bytes\":0,\"worker_duration_ms\":104,\"worker_name\":\"codex\",\"worker_version\":\"override\",\"completed_at\":\"2026-08-14T04:11:31.364Z\",\"workflow_exit_reason\":\"worker_nonzero\"}',\n    expected: /:0(?:[,}])/,\n    operator: 'doesNotMatch',\n    diff: 'simple'\n  }\n",
+  "completed_at": "2026-08-14T04:11:38.136Z",
+  "workflow_exit_reason": "verification"
+}

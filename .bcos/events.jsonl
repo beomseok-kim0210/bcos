@@ -56,3 +56,6 @@
 {"ts":"2026-08-13T14:21:09.256Z","event":"TASK_SUBMITTED","task":"T-901","attempt":1,"actor_role":"worker","actor_id":"codex-cli","from":"IN_PROGRESS","to":"IMPLEMENTED"}
 {"ts":"2026-08-14T03:55:10.983Z","event":"TASK_APPROVED","task":"T-901","attempt":1,"actor_role":"human","actor_id":"human","from":"IMPLEMENTED","to":"DONE"}
 {"ts":"2026-08-14T03:58:38.409Z","event":"TASK_UNBLOCKED","task":"T-016","attempt":1,"actor_role":"human","actor_id":"human","from":"BLOCKED","to":"TODO"}
+{"ts":"2026-08-14T04:01:15.498Z","event":"TASK_STARTED","task":"T-016","attempt":2,"actor_role":"worker","actor_id":"codex-cli","from":"TODO","to":"IN_PROGRESS"}
+{"ts":"2026-08-14T04:28:06.716Z","event":"TASK_SUBMITTED","task":"T-016","attempt":2,"actor_role":"worker","actor_id":"codex-cli","from":"IN_PROGRESS","to":"IMPLEMENTED"}
+{"ts":"2026-08-14T08:43:49.485Z","event":"TASK_APPROVED","task":"T-016","attempt":2,"actor_role":"human","actor_id":"human","from":"IMPLEMENTED","to":"DONE"}

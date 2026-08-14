@@ -13,6 +13,9 @@ export type RunRecord = {
   workflow_exit_reason?: string; current_stage?: Stage; verification_command?: string;
   verification_exit_code?: number; verification_excerpt?: string;
   worker_name?: string; worker_version?: string; reviewer_name?: string; reviewer_version?: string;
+  worker_invocations?: number; context_files?: number; context_chars?: number; context_bytes?: number;
+  stdin_bytes?: number; worker_stdout_bytes?: number; worker_stderr_bytes?: number;
+  worker_duration_ms?: number; verification_duration_ms?: number;
   stages: Record<Stage, StageStatus>;
 };
 

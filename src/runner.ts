@@ -15,6 +15,10 @@ export type RunWorkerOptions = {
   onTimeout?: () => void;
 };
 
+export type WorkerRunResult = ModelResult & {
+  contextFiles: number; contextChars: number; contextBytes: number; stdinBytes: number;
+};
+
 type PreparedRun = {
   command: string;
   args: string[];
@@ -172,11 +176,13 @@ function printDryRun(prepared: PreparedRun): void {
   telemetry(prepared, { worker_timed_out: false });
 }
 
-export async function runCodexWorker(taskId: string, options: RunWorkerOptions): Promise<ModelResult> {
+export async function runCodexWorker(taskId: string, options: RunWorkerOptions): Promise<WorkerRunResult> {
   const prepared = prepareRun(taskId, options);
+  const measurements = { contextFiles: prepared.contextFileCount, contextChars: prepared.contextChars,
+    contextBytes: prepared.contextBytes, stdinBytes: Buffer.byteLength(prepared.stdin, "utf8") };
   if (options.dryRun) {
     printDryRun(prepared);
-    return { exitCode: 0, durationMs: 0, stdoutBytes: 0, stderrBytes: 0, timedOut: false,
+    return { ...measurements, exitCode: 0, durationMs: 0, stdoutBytes: 0, stderrBytes: 0, timedOut: false,
       runtime: options.worker as ModelRuntime, runtimeKind: prepared.runtimeKind, version: prepared.version };
   }
   const result = await runModel({ runtime: options.worker as ModelRuntime, cwd: prepared.cwd, stdin: prepared.stdin,
@@ -191,5 +197,5 @@ export async function runCodexWorker(taskId: string, options: RunWorkerOptions):
     worker_exit_code: result.exitCode, worker_timed_out: result.timedOut,
     worker_stdout_bytes: result.stdoutBytes, worker_stderr_bytes: result.stderrBytes,
   });
-  return result;
+  return { ...result, ...measurements };
 }

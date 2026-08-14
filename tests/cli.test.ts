@@ -14,6 +14,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { modelCommand, runModel } from "../dist/model.js";
+import { readTrials } from "../dist/benchmark.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cli = path.join(root, "dist", "cli.js");
@@ -2541,7 +2542,8 @@ test("status omits the reviewer line when review did not run", () => withWorkflo
 
 test("run records distinguish all stage state vocabulary without zeroes", () => withWorkflowFixture((fixture_) => {
   runExecute(fixture_, [], { WORKER_EXIT: "3" }); const text = JSON.stringify(workflowRun(fixture_));
-  assert.match(text, /failed/); assert.match(text, /not_started/); assert.doesNotMatch(text, /:0(?:[,}])/);
+  assert.match(text, /failed/); assert.match(text, /not_started/);
+  assert.doesNotMatch(JSON.stringify(workflowRun(fixture_).stages), /:0(?:[,}])/);
 }));
 
 test("help advertises task status", () => assert.match(run("--help").stdout, /status/));
@@ -2724,4 +2726,165 @@ test("model adapter uses one common result shape for both runtimes", () => withM
 test("model adapter result durations are nonnegative integers", () => withModel(`process.exitCode = 0`, async ({ directory, command }) => {
   const result = await runModel({ runtime: "codex", cwd: directory, stdin: "", timeoutSeconds: 5,
     commandOverride: command }); assert.ok(Number.isInteger(result.durationMs)); assert.ok(result.durationMs >= 0);
+}));
+
+function benchmarkFixture() {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "bcos-benchmark-"));
+  mkdirSync(path.join(directory, ".bcos", "benchmarks"), { recursive: true });
+  mkdirSync(path.join(directory, ".bcos", "runs"), { recursive: true });
+  return directory;
+}
+
+const unavailable = () => ({ value: null, source: "unavailable" });
+function validTrial(arm = "codex_only", caseId = "CASE-FE-001") {
+  const trial = {
+    measurement_version: "0.1", case_id: caseId, arm, repetition: 1,
+    repository_base_commit: "a".repeat(40), requirement_sha256: "b".repeat(64),
+    environment: { os: "fixture-os", node: "v24", bcos: "0.1", worker: "fixture", reviewer: "fixture" },
+    system_usage: arm === "bcos" ? [
+      { phase: "planning", runtime: "claude", input_tokens: unavailable(), output_tokens: unavailable() },
+      { phase: "worker", runtime: "codex", input_tokens: unavailable(), output_tokens: unavailable() },
+      { phase: "review", runtime: "claude", input_tokens: unavailable(), output_tokens: unavailable() },
+    ] : [{ phase: "single_agent", runtime: arm === "codex_only" ? "codex" : "claude",
+      input_tokens: unavailable(), output_tokens: unavailable() }],
+    evaluation_usage: { input_tokens: unavailable(), output_tokens: unavailable() },
+    human: { intervention_count: { value: 0, source: "measured" }, active_ms: unavailable() },
+    outcome: { status: "success", gate_ac_passed: unavailable(), gate_ac_total: unavailable() },
+  };
+  if (arm === "bcos") trial.bcos = { task_id: "T-015", execution_ids: ["fixture-execution"] };
+  else trial.proxies = { stdin_bytes: { value: 123, source: "proxy" } };
+  return trial;
+}
+
+function writeTrial(directory, trial, name = `${trial.case_id}-${trial.arm}-${trial.repetition}.json`) {
+  writeFileSync(path.join(directory, ".bcos", "benchmarks", name), `${JSON.stringify(trial)}\n`, "utf8");
+}
+
+function withBenchmark(callback) {
+  const directory = benchmarkFixture();
+  try { callback(directory); } finally { rmSync(directory, { recursive: true, force: true }); }
+}
+
+test("readTrials returns baseline trials without BCOS run artifacts", () => withBenchmark((directory) => {
+  writeTrial(directory, validTrial());
+  const trials = readTrials(directory);
+  assert.equal(trials.length, 1); assert.equal(trials[0].case_id, "CASE-FE-001");
+  assert.equal(trials[0].proxies.stdin_bytes.source, "proxy");
+}));
+
+test("readTrials accepts a real-shape BCOS reference with all three usage components", () => withBenchmark((directory) => {
+  const run = { execution_id: "fixture-execution", task_id: "T-015", attempt: 1,
+    started_at: "2026-08-12T12:49:28.305Z", updated_at: "2026-08-12T12:57:36.215Z",
+    workflow_status: "success", stages: { start: "success", worker: "success",
+      report_check: "success", verification: "success", submit: "success", review: "not_started",
+      approve: "not_started", request_changes: "not_started" }, verification_command: "npm-test",
+    verification_exit_code: 0, verification_excerpt: "fixture output", completed_at: "2026-08-12T12:57:36.215Z" };
+  writeFileSync(path.join(directory, ".bcos", "runs", "fixture-execution.json"), JSON.stringify(run), "utf8");
+  writeTrial(directory, validTrial("bcos"));
+  assert.deepEqual(readTrials(directory)[0].system_usage.map(component => component.phase),
+    ["planning", "worker", "review"]);
+}));
+
+test("readTrials rejects independent core schema violations with filename and rule", () => {
+  const cases = [
+    ["measurement_version", "0.2"], ["arm", "bcos_claude"], ["repetition", 0],
+    ["repetition", 1.5], ["repository_base_commit", "a".repeat(39)],
+    ["requirement_sha256", "b".repeat(63)],
+  ];
+  for (const [key, value] of cases) withBenchmark((directory) => {
+    const trial = validTrial(); trial[key] = value;
+    const name = `${trial.case_id}-${trial.arm}-${trial.repetition}.json`; writeTrial(directory, trial, name);
+    assert.throws(() => readTrials(directory), (error) => error.message.includes(name) && error.message.includes(key));
+  });
+  withBenchmark((directory) => {
+    const trial = validTrial(); trial.outcome.status = "partial"; writeTrial(directory, trial);
+    assert.throws(() => readTrials(directory), /CASE-FE-001-codex_only-1\.json: outcome\.status/);
+  });
+});
+
+test("readTrials enforces provenance including unavailable zero and token proxy rejection", () => {
+  for (const invalid of [{ value: 0, source: "unavailable" }, { value: null, source: "measured" },
+    { value: 1, source: "guessed" }, { value: 1, source: "proxy" }]) withBenchmark((directory) => {
+    const trial = validTrial(); trial.system_usage[0].input_tokens = invalid; writeTrial(directory, trial);
+    assert.throws(() => readTrials(directory), /component\.input_tokens/);
+  });
+});
+
+test("readTrials rejects canonical identity violations without parsing hyphens", () => {
+  for (const slug of ["case-FE-001", "CASE--FE", "CASE-FE-", "CASE-F E", "CASE-.",
+    "CASE-..", "CASE-F/E", "CASE-F\\E"]) withBenchmark((directory) => {
+    const trial = validTrial("codex_only", slug); writeTrial(directory, trial, "fixture.json");
+    assert.throws(() => readTrials(directory), /case_id slug/);
+  });
+  for (const name of ["CASE-BE-001-codex_only-1.json", "CASE-FE-001-claude_only-1.json",
+    "CASE-FE-001-codex_only-2.json", "CASE-FE-001-codex_only-01.json"]) withBenchmark((directory) => {
+    writeTrial(directory, validTrial(), name); assert.throws(() => readTrials(directory), /canonical filename/);
+  });
+});
+
+test("readTrials rejects arm ownership and component symmetry violations", () => {
+  const mutations = [
+    trial => { trial.bcos = { task_id: "T-015", execution_ids: [] }; },
+    trial => { trial.system_usage[0].phase = "planning"; },
+    trial => { trial.system_usage[0].runtime = "claude"; },
+    trial => { trial.system_usage[0].phase = "future"; },
+    trial => { trial.system_usage[0].runtime = "other"; },
+  ];
+  for (const mutate of mutations) withBenchmark((directory) => {
+    const trial = validTrial(); mutate(trial); writeTrial(directory, trial);
+    assert.throws(() => readTrials(directory));
+  });
+  withBenchmark((directory) => {
+    writeFileSync(path.join(directory, ".bcos", "runs", "fixture-execution.json"), "{}", "utf8");
+    const trial = validTrial("bcos"); trial.proxies = { stdin_bytes: { value: 1, source: "proxy" } };
+    writeTrial(directory, trial); assert.throws(() => readTrials(directory), /must not contain proxies/);
+  });
+});
+
+test("readTrials includes all seven outcomes and does not create totals", () => withBenchmark((directory) => {
+  const statuses = ["success", "verification_failed", "review_failed", "timeout", "worker_error", "protocol_error", "aborted"];
+  statuses.forEach((status, index) => { const trial = validTrial("codex_only", `CASE-STATUS-${index + 1}`);
+    trial.outcome.status = status; writeTrial(directory, trial); });
+  const trials = readTrials(directory); assert.deepEqual(trials.map(trial => trial.outcome.status), statuses);
+  assert.equal(trials.some(trial => "total" in trial || "total" in trial.system_usage), false);
+}));
+
+test("readTrials throws instead of silently skipping one invalid trial", () => withBenchmark((directory) => {
+  writeTrial(directory, validTrial("codex_only", "CASE-VALID-1"));
+  writeTrial(directory, validTrial("claude_only", "CASE-VALID-2"));
+  const invalid = validTrial("codex_only", "CASE-INVALID-3"); invalid.repetition = 0;
+  writeTrial(directory, invalid, "CASE-INVALID-3-codex_only-0.json");
+  assert.throws(() => readTrials(directory), /repetition/);
+}));
+
+function telemetryNumbers(output, key) {
+  return [...output.matchAll(new RegExp(`^telemetry ${key}=(\\d+)$`, "gm"))].map(match => Number(match[1]));
+}
+
+test("task execute persists all nine benchmark measurements matching telemetry", () => withWorkflowFixture((fixture_) => {
+  const result = runExecute(fixture_); const record = workflowRun(fixture_); const values = telemetryValues(result.stdout);
+  assert.equal(record.worker_invocations, 1);
+  for (const key of ["context_files", "context_chars", "context_bytes", "stdin_bytes",
+    "worker_stdout_bytes", "worker_stderr_bytes", "worker_duration_ms"]) assert.equal(record[key], Number(values[key]));
+  assert.equal(record.verification_duration_ms, Number(values.verification_duration_ms));
+  assert.ok(record.verification_duration_ms > 0);
+}));
+
+test("review rework persists invocation counts and sums cumulative worker measurements", () => withWorkflowFixture((fixture_) => {
+  const result = runReviewExecute(fixture_, [], { REVIEW_SEQUENCE: "CHANGES_REQUESTED,APPROVED" });
+  const record = workflowRun(fixture_); assert.equal(record.worker_invocations, 2);
+  for (const key of ["context_files", "context_chars", "context_bytes", "stdin_bytes",
+    "worker_stdout_bytes", "worker_stderr_bytes", "worker_duration_ms"]) {
+    assert.equal(record[key], telemetryNumbers(result.stdout, key).at(-1));
+  }
+  assert.equal(record.verification_duration_ms,
+    telemetryNumbers(result.stdout, "verification_duration_ms").at(-1));
+}));
+
+test("worker failures retain measurements and excluded telemetry fields stay absent", () => withWorkflowFixture((fixture_) => {
+  runExecute(fixture_, [], { WORKER_EXIT: "3" }); const record = workflowRun(fixture_);
+  for (const key of ["worker_invocations", "context_files", "context_chars", "context_bytes", "stdin_bytes",
+    "worker_stdout_bytes", "worker_stderr_bytes", "worker_duration_ms"]) assert.ok(key in record);
+  for (const key of ["context_lines", "context_sha256", "stdin_sha256", "first_worker_response_ms",
+    "workflow_duration_ms", "nested_worker_detected"]) assert.equal(key in record, false);
 }));
