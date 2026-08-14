@@ -1,0 +1,26 @@
+{
+  "execution_id": "20260813T140601178Z-34c6d809",
+  "task_id": "T-901",
+  "attempt": 1,
+  "started_at": "2026-08-13T14:06:01.178Z",
+  "updated_at": "2026-08-13T14:13:33.493Z",
+  "workflow_status": "failed",
+  "stages": {
+    "start": "success",
+    "worker": "success",
+    "report_check": "success",
+    "verification": "failed",
+    "submit": "not_started",
+    "review": "not_started",
+    "approve": "not_started",
+    "request_changes": "not_started"
+  },
+  "verification_command": "npm-test",
+  "current_stage": "verification",
+  "worker_name": "codex",
+  "worker_version": "0.147.0",
+  "verification_exit_code": 1,
+  "verification_excerpt": "…\nntime (79.808ms)\n✔ model adapter reports override version without probing (121.786ms)\n✔ model adapter uses one common result shape for both runtimes (149.1739ms)\n✔ model adapter result durations are nonnegative integers (78.0292ms)\nabcd\nℹ tests 278\nℹ suites 0\nℹ pass 277\nℹ fail 1\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 99265.979\n\n✖ failing tests:\n\ntest at tests\\cli.test.ts:1061:1\n✖ task context retains the short write boundary (120.7001ms)\n  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /^files: 1$/m. Input:\n  \n  '=== BCOS CONTEXT PACKAGE v0.1 ===\\n' +\n    'task: T-100\\n' +\n    'status: IN_PROGRESS\\n' +\n    'attempt: 3\\n' +\n    'files: 2\\n' +\n    'characters: 19\\n' +\n    'lines: 4\\n' +\n    '--- FILE 1/2: one.txt ---\\n' +\n    'first file\\n' +\n    '\\n' +\n    '\\n' +\n    '--- FILE 2/2: two.txt ---\\n' +\n    'note: — second note\\n' +\n    '두 번째 파일\\n' +\n    '\\n' +\n    '=== END CONTEXT PACKAGE ===\\n'\n  \n      at file:///<root>/tests/cli.test.ts:1065:12\n      at withContextFixture (file:///<root>/tests/cli.test.ts:264:5)\n      at TestContext.<anonymous> (file:///<root>/tests/cli.test.ts:1062:3)\n      at Test.runInAsyncScope (node:async_hooks:214:14)\n      at Test.run (node:internal/test_runner/test:1106:25)\n      at Test.processPendingSubtests (node:internal/test_runner/test:788:18)\n      at Test.postRun (node:internal/test_runner/test:1235:19)\n      at Test.run (node:internal/test_runner/test:1163:12)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:788:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: '=== BCOS CONTEXT PACKAGE v0.1 ===\\ntask: T-100\\nstatus: IN_PROGRESS\\nattempt: 3\\nfiles: 2\\ncharacters: 19\\nlines: 4\\n--- FILE 1/2: one.txt ---\\nfirst file\\n\\n\\n--- FILE 2/2: two.txt ---\\nnote: — second note\\n두 번째 파일\\n\\n=== END CONTEXT PACKAGE ===\\n',\n    expected: /^files: 1$/m,\n    operator: 'match',\n    diff: 'simple'\n  }\n",
+  "completed_at": "2026-08-13T14:13:33.493Z",
+  "workflow_exit_reason": "verification"
+}

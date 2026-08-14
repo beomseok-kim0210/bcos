@@ -45,7 +45,7 @@ function readList(content: string): ReadListItem[] {
 
   const items: ReadListItem[] = [];
   for (const line of lines.slice(labelIndex + 1)) {
-    if (/^\*\*(?:생성|수정|쓰기)\*\*/.test(line)) break;
+    if (/^\*\*(?:생성|수정|쓰기(?: 허용 \(Write List\))?)\*\*/.test(line)) break;
     if (!/^- /.test(line)) continue;
     const match = /`([^`]+)`/.exec(line);
     if (match) {

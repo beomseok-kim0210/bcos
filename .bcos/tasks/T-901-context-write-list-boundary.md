@@ -2,10 +2,10 @@
 protocol: "0.1"
 id: T-901
 title: Accept the symmetric Write List label as a Read List boundary
-status: TODO
-attempt: 0
+status: DONE
+attempt: 1
 created: 2026-08-13T13:30:00Z
-updated: 2026-08-13T13:30:00Z
+updated: 2026-08-14T03:55:10.983Z
 ---
 
 # T-901 — Context Write List Boundary

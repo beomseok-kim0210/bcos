@@ -183,6 +183,10 @@ const actualT004Task = readFileSync(
   path.join(root, ".bcos", "tasks", "T-004-task-submit-command.md"),
   "utf8",
 );
+const actualT016Task = readFileSync(
+  path.join(root, ".bcos", "tasks", "T-016-benchmark-trial-record.md"),
+  "utf8",
+);
 const actualRfc001 = readFileSync(
   path.join(root, "docs", "rfcs", "RFC-001-task-protocol.md"),
   "utf8",
@@ -1023,6 +1027,85 @@ test("task context includes a copied real RFC-001 fixture in full", () => {
     items: ["- `docs/rfcs/RFC-001-task-protocol.md` — full file"],
     files: { "docs/rfcs/RFC-001-task-protocol.md": actualRfc001 },
   });
+});
+
+test("task context treats the symmetric Write List label as a boundary", () => {
+  withContextFixture((directory) => {
+    const result = runContext(directory);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^files: 1$/m);
+    assert.doesNotMatch(result.stdout, /also-ignored\.txt ---/);
+  }, {
+    body: contextBody(["- `one.txt`"])
+      .replace("**쓰기**", "**쓰기 허용 (Write List)**"),
+    files: { "one.txt": "one" },
+  });
+});
+
+test("task context retains the short create boundary", () => {
+  withContextFixture((directory) => {
+    const result = runContext(directory);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^files: 1$/m);
+  }, { body: contextBody(["- `one.txt`"]).replace("**쓰기**", "**생성**") });
+});
+
+test("task context retains the short modify boundary", () => {
+  withContextFixture((directory) => {
+    const result = runContext(directory);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^files: 1$/m);
+  }, { body: contextBody(["- `one.txt`"]).replace("**쓰기**", "**수정**") });
+});
+
+test("task context retains the short write boundary", () => {
+  withContextFixture((directory) => {
+    const result = runContext(directory);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^files: 1$/m);
+  }, { body: contextBody(["- `one.txt`"]) });
+});
+
+test("task context does not treat bold Read List prose as a boundary", () => {
+  withContextFixture((directory) => {
+    const result = runContext(directory);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^files: 2$/m);
+    assert.match(result.stdout, /--- FILE 2\/2: two\.txt ---/);
+  }, {
+    items: ["- `one.txt`", "**여기 없는 파일은 읽지 않는다.**", "- `two.txt`"],
+  });
+});
+
+test("task context parses the copied real T-016 Read List as exactly ten files", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "bcos-context-t016-"));
+  try {
+    const fixtureFiles = {
+      ".bcos/tasks/T-016-benchmark-trial-record.md": actualT016Task,
+      "src/run.ts": "fixture run\n",
+      "src/runner.ts": "fixture runner\n",
+      "src/workflow.ts": "fixture workflow\n",
+      "src/context.ts": "fixture context\n",
+      "src/model.ts": "fixture model\n",
+      "tests/cli.test.ts": "fixture tests\n",
+      "package.json": "{}\n",
+      "AGENTS.md": "fixture agents\n",
+      ".bcos/runs/20260812T124928305Z-7b47aa44.json": "{}\n",
+    };
+    for (const [name, content] of Object.entries(fixtureFiles)) {
+      const filePath = path.join(directory, ...name.split("/"));
+      mkdirSync(path.dirname(filePath), { recursive: true });
+      writeFileSync(filePath, content, "utf8");
+    }
+    const result = runContext(directory, "T-016");
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^files: 10$/m);
+    assert.doesNotMatch(result.stdout, /--- FILE \d+\/\d+: src\/benchmark\.ts ---/);
+    assert.doesNotMatch(result.stdout,
+      /--- FILE \d+\/\d+: \.bcos\/reports\/T-016-benchmark-trial-record\.md ---/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("task context rejects a missing Task without stdout", () => {
