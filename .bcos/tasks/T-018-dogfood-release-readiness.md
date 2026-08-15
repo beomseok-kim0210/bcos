@@ -2,10 +2,10 @@
 protocol: "0.1"
 id: T-018
 title: Make the active documentation match the built CLI before external dogfooding
-status: TODO
-attempt: 0
+status: DONE
+attempt: 1
 created: 2026-08-14T13:40:00Z
-updated: 2026-08-14T13:40:00Z
+updated: 2026-08-15T03:39:11.125Z
 ---
 
 # T-018 — Dogfood Release Readiness

@@ -179,6 +179,12 @@ Implemented and verified:
   **That is two path substitutions, not secret redaction** — anything else in the
   verifier's output is carried as-is. When there is no failure to report, worker input is
   byte-for-byte what it was before this existed
+- The model adapter accepts `--worker codex` and, as an optional capability,
+  `--worker claude`. The default operating policy remains Claude as Manager/Reviewer and
+  Codex as Worker; selecting Claude for a worker session does not make it the default
+- Workflow telemetry is persisted in run and benchmark artifacts. T-016 provides a
+  measurement harness that can record comparable evidence; it is not a controlled trial
+  result
 - Lifecycle guards checked **before any write**, so a rejected transition leaves every
   file untouched — verified across eleven failure paths. `task context` writes nothing
   at all, and a rejected package emits zero bytes to stdout
@@ -190,26 +196,28 @@ Implemented and verified:
 
 Not implemented. Do not expect these to work yet.
 
-- Model adapters — `codex` is the only worker `task run` accepts, so there is no model to
-  switch to and no token or cost figure to record
-- Telemetry persistence — the fields go to stdout and are gone when the window closes
 - A submit guard that reads what a report claims — one that declares its own criteria
   unverified still passes, because the check is that a report exists. What changed is that
   an automated reviewer now runs, and RFC-001 requires it to refuse a completion claim
   with no evidence behind it
-- Carrying a verification failure back to the worker — a failed run leaves the task
-  `IN_PROGRESS`, but a plain resume tells the worker nothing about what failed, so it
-  cannot act on it. Review feedback has that path; verification failure does not
-- `bcos task request-changes`, `bcos task block`, `bcos task unblock`
-- `bcos task create`, `bcos task list`
-- `bcos init`, `bcos status`, `bcos reindex`
+- `bcos task block`, `bcos task unblock`
+- `bcos task create`, `bcos task list`, `bcos task show`
+- `bcos init`, project-global `bcos status`, `bcos reindex`
 - Role-based worker task templates
 - Worktree-isolated parallel workers
+- A canonical benchmark case, a common external evaluation gate, and a controlled
+  benchmark result. Direct token measurements may still be reported as `unavailable`
 
 **Four of the seven protocol transitions are automated** — `start`, `submit`, `approve`,
 and `request-changes`. `block` and `unblock` still have no command. `actor_id` is
 self-declared, so separation of duties assumes a trusted environment; authentication is a
 known limit of protocol `0.1`.
+
+Other known limits: fresh projects require manual bootstrap; same-attempt Report append
+semantics are not fully specified; and T-016 is only a measurement harness. There is no
+canonical case or common evaluation gate yet, and direct token values can remain
+`unavailable`. The current `workflow.ts` is at its maintenance ceiling (340/340 lines),
+which is an implementation maintenance note rather than a user-facing capability.
 
 **One command can now carry a task from `TODO` to `DONE`.** Task design and the commit
 are still done by a person, and so is deciding to run it at all.
@@ -231,9 +239,11 @@ host**, so a worker that cannot check itself no longer decides whether its work 
 submitted. The nesting guard and the spawn probe cover the narrower case of the workflow
 command itself being run inside a worker.
 
-## Verified Baselines
+## Historical Baselines Through T-012
 
-Twelve tasks have completed the full protocol cycle. These are **baselines, not improvements.**
+The first twelve tasks completed the full protocol cycle. These are retained as
+**historical baselines, not improvements.** Later core tasks are reflected in Current
+Capabilities rather than extending this table.
 
 | | T-003 | T-005 | T-004 | T-006 | T-007 | T-008 | T-009 | T-010 | T-011 | T-012 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -385,10 +395,22 @@ node dist/cli.js task run <your-in-progress-task-id> --worker codex --dry-run
 ```
 
 The `task` commands operate on the `.bcos/` directory of the **current working
-directory**. They work in this repository because `.bcos/tasks/`, `.bcos/events.jsonl`,
-and `.bcos/state.json` already exist. There is no `bcos init` yet, so a fresh project has
-to create that structure by hand first. The commands listed under Planned do not exist
-at all.
+directory**. To dogfood the built CLI in another project, create `.bcos/tasks/`,
+`.bcos/reports/`, `.bcos/reviews/`, and `.bcos/runs/`; create an empty
+`.bcos/events.jsonl`; create `.bcos/state.json` with protocol, counts, and
+`current_task`; add an `AGENTS.md`; and add a Task contract whose Read List includes the
+Task itself and every target-project file the worker may read. Then, from that target
+project, use the absolute path to this build:
+
+```text
+node <path-to-bcos>/dist/cli.js task context T-001
+node <path-to-bcos>/dist/cli.js task start T-001 --actor-role worker --actor-id codex-cli
+node <path-to-bcos>/dist/cli.js task run T-001 --worker codex --dry-run
+node <path-to-bcos>/dist/cli.js task status T-001
+```
+
+This smoke path starts no model process and makes no network call because `task run` uses
+`--dry-run`. There is no `bcos init`; the commands under Planned do not exist.
 
 ## Repository Structure
 
@@ -423,22 +445,17 @@ tests/                Tests
 Core CLI commands → automated lifecycle transitions → context package generation →
 worker execution → prompt elimination → workflow orchestration → reviewer and rework
 orchestration → execution observability → model adapter boundary → verification failure
-feedback — **done.** What follows:
+feedback → telemetry persistence and measurement harness — **done.** What follows:
 
 | | |
 |---|---|
-| **Multi-model Worker Switching** | A second worker, which is what makes "switch models" mean anything |
-| **Benchmark Harness** | Answer the six fairness questions before comparing arms |
-| **Benchmark Report** | Where division is finally allowed |
+| **Role-based Task Templates** | Reusable defaults after real role cases justify them |
+| **Worktree Parallelism** | Isolated parallel workers after demand is demonstrated |
+| **Controlled Benchmark** | Canonical case and common evaluation gate before comparison |
 
-T-012 closed the observability gap T-011 exposed: every run now leaves a record and one
-command reads it. What it did not close is the other half — when host verification fails,
-the task correctly stays `IN_PROGRESS`, but resuming tells the worker nothing about what
-failed. Review feedback has a path back to the worker; verification failure does not.
-That gap is what the next task should take.
-
-T-012's own first run is not in the record, because it started from a build that predated
-the recorder. **The first workflow observable end to end will be the next one.**
+The core is complete enough for external dogfooding, with manual project bootstrap.
+Benchmark records can now preserve comparable evidence, but no controlled result or
+efficiency conclusion exists yet.
 
 Stages and entry conditions: [docs/vision.md](docs/vision.md)
 

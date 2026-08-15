@@ -30,7 +30,7 @@ Backend Worker와 Test Worker는 같은 실행기의 서로 다른 세션이다.
    **`git commit` / `git push` / `git checkout`도 실행 금지.** 커밋은 human이 한다.
 4. **`bcos task approve` 실행 금지.** 네가 제출한 것을 네가 승인할 수 없다 (RFC-001 G5).
 5. **Task의 Out of Scope 침범 금지.** "가는 김에" 고치지 않는다.
-6. **Expected Files 목록 밖의 파일 수정 금지.** 필요하면 `bcos task block`으로 멈추고 보고한다.
+6. **Expected Files 목록 밖의 파일 수정 금지.** 필요하면 멈추고 막힌 이유를 보고한다.
 
 > 3번이 특히 중요하다. 파일을 직접 고치면 이벤트 로그가 끊기고,
 > 그 순간 프로젝트는 무엇이 언제 왜 바뀌었는지 알 수 없게 된다.
@@ -53,32 +53,29 @@ Backend Worker와 Test Worker는 같은 실행기의 서로 다른 세션이다.
 
 ## 2. 작업 흐름
 
-```bash
-bcos task show T-001
-```
-
-이 출력이 **너에게 주어진 전부다.** 여기에 없는 것을 찾아 저장소를 헤매지 않는다.
+Manager/Human이 `bcos task execute`로 시작한 Worker라면 stdin의 Context Package가
+**너에게 주어진 전부다.** 여기에 없는 것을 찾아 저장소를 헤매지 않는다.
 
 ```
-1. bcos task show <id>       # Context Package 수령
-2. bcos task start <id>      # TODO -> IN_PROGRESS
-3. 구현 + 테스트
-4. .bcos/reports/<id>-<slug>.md 작성   # 아래 §4 포맷
-5. bcos task submit <id>     # IN_PROGRESS -> IMPLEMENTED
-6. 멈춘다. 리뷰를 기다린다.
+1. Context Package 수령      # task context가 조립, host가 stdin으로 전달
+2. 구현 + 가능한 로컬 테스트
+3. .bcos/reports/<id>-<slug>.md 작성   # 아래 §4 포맷
+4. 멈춘다                        # host가 검증 후 submit
 ```
 
-**6번에서 반드시 멈춘다.** 다음 Task로 넘어가지 않는다.
+**4번에서 반드시 멈춘다.** 다음 Task로 넘어가지 않는다. Worker session은 lifecycle을
+소유하지 않는다. Host workflow가 검증과 제출을 수행하고, 선택적으로 독립 reviewer를
+실행한다.
+
+외부 프로젝트에서 사람이 수동으로 운용할 때는 Worker를 띄우기 전에 `task start`,
+Report 작성 뒤 `task submit`을 별도 host 단계로 실행할 수 있다. Worker 자신이 그
+전이를 수행하는 절차와 혼동하지 않는다.
 
 리뷰 결과가 `CHANGES_REQUESTED`면 상태가 `IN_PROGRESS`로 돌아온다.
 그때 `.bcos/reviews/<id>-<slug>.md`의 `Required Changes`를 읽고 3번부터 다시 한다.
 `attempt`가 자동으로 1 증가하므로 Report에는 새 `## Attempt <n>` 항목을 추가한다.
 
 ## 3. 막혔을 때
-
-```bash
-bcos task block <id>
-```
 
 다음 경우에는 추측하지 말고 즉시 멈춘다.
 
@@ -89,6 +86,8 @@ bcos task block <id>
 
 **추측해서 진행하는 것보다 멈추는 것이 항상 낫다.**
 잘못된 방향으로 완주한 작업은 되돌리는 비용이 멈춘 비용보다 크다.
+Report의 `Known Risks`와 최종 응답에 막힌 이유를 남기고 종료한다. 현재 CLI에는
+block/unblock 전이가 없으므로 Worker가 상태를 직접 바꾸지 않는다.
 
 ## 4. Report 포맷 — `.bcos/reports/<id>-<slug>.md`
 
@@ -173,5 +172,5 @@ Report는 **append-only**다.
 | 코드 작성·수정 | Task 파일 수정 |
 | 테스트 작성·실행 | Review 작성 |
 | Report 작성 | `approve` 실행 |
-| `start` / `submit` / `block` | 아키텍처 결정 |
+| 구현·테스트 결과 보고 | 아키텍처 결정 |
 | 막혔을 때 멈추기 | 범위 밖 리팩터링 |

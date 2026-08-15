@@ -154,6 +154,10 @@ Worker가 되기도 한다. 세션에는 기억을 남기지 않으므로 언제
 - 발췌의 저장소 루트·홈 경로는 `<root>` · `<home>` 으로 치환된다.
   **경로 두 건 치환일 뿐 비식별화가 아니다** — 그 밖의 내용은 그대로 실린다.
   전달할 실패가 없으면 worker 입력은 이 기능이 생기기 전과 **바이트 단위로 같다**
+- Model Adapter는 기본 `codex`와 선택 가능한 `claude` worker를 지원한다. 기본 운영
+  정책은 Claude Manager/Reviewer + Codex Worker이며, `--worker claude`는 기본값이 아니다
+- workflow telemetry는 Run과 Benchmark 아티팩트에 저장된다. T-016은 비교 가능한
+  증거를 기록하는 measurement harness이며 controlled trial 결과는 아니다
 - 상태 전이 테스트는 임시 디렉터리에서만 실행되며 저장소의 실제 `.bcos/`를 건드리지 않는다
 - 모든 작업에 대해 Report, Review, Benchmark 기록을 남긴다
 
@@ -180,9 +184,6 @@ T-010이 이 문제에 답했지만 감지로 답한 것은 아니다. worker가
 못하게 됐다. 중첩 guard와 spawn probe는 workflow 명령 자체가 worker 안에서 실행되는
 더 좁은 경우를 막는다.
 
-**지원하는 worker는 `codex` 하나뿐이다.** 모델을 바꾸는 것은 아직 불가능하고
-토큰·비용도 측정하지 않는다.
-
 **Report가 스스로 실패를 선언해도 `submit`은 통과한다** — 가드가 Report의 존재만
 검사하고 내용은 보지 않기 때문이다. 달라진 것은 그 뒤에 자동 Reviewer가 서고,
 RFC-001이 **증거 없는 완료 주장을 `CHANGES_REQUESTED`로 판정하라고 요구한다는** 점이다.
@@ -193,17 +194,18 @@ RFC-001이 **증거 없는 완료 주장을 `CHANGES_REQUESTED`로 판정하라�
 **다만 `task execute --review`를 실제 Claude reviewer로 돌려본 적은 아직 없다.**
 검증은 전부 가짜 reviewer로 했고, T-011 자신의 Review도 사람이 했다.
 
-**T-012 자신의 최초 실행은 기록에 없다** — 기록 기능이 담기기 전의 빌드로 시작됐기
-때문이다. **전 구간이 관측되는 첫 workflow는 다음 Task가 된다.**
-
-Task를 만들거나 목록을 보는 명령, 새 프로젝트에 `.bcos/` 구조를 만드는 `init`,
-상태를 조회하는 `status`와 인덱스를 다시 만드는 `reindex`도 아직 없다.
+`task create`·`list`·`show`·`block`·`unblock`, 새 프로젝트에 `.bcos/` 구조를 만드는
+`init`, project-global `status`, `reindex`는 아직 없다. `actor_id`는 자기 신고이며,
+직접 token 값은 `unavailable`일 수 있다. same-attempt Report append semantics도 완전히
+정해지지 않았다. T-016은 harness일 뿐 controlled result가 아니고, canonical case와
+공통 evaluation gate도 아직 없다.
 
 구현 시점은 약속하지 않는다. 필요가 확인된 순서대로 만든다.
 
-## T-001부터 T-012까지
+## T-001부터 T-012까지의 역사적 기준선
 
-지금까지 열두 개의 작업이 프로토콜 전 과정을 통과했다.
+첫 열두 개 작업이 프로토콜 전 과정을 통과한 기록이다. 이후 Core Task의 현재 기능은
+위의 "현재 구현된 기능"에 반영하고, 이 표는 당시의 역사적 기준선으로 보존한다.
 
 | | 한 일 | AC | 테스트 |
 |---|---|---:|---:|
@@ -297,6 +299,19 @@ node dist/cli.js task run <IN_PROGRESS인 Task ID> --worker codex --dry-run
 `task` 명령들은 현재 작업 디렉터리의 `.bcos/`를 대상으로 동작한다. 이 저장소에는
 `.bcos/tasks/`, `.bcos/events.jsonl`, `.bcos/state.json`이 이미 있어서 바로 실행되지만,
 아직 `init` 명령이 없으므로 **새 프로젝트에서는 이 구조를 직접 만들어야 한다.**
+`.bcos/tasks/`·`reports/`·`reviews/`·`runs/`, 빈 `events.jsonl`, protocol·counts·
+`current_task`를 담은 `state.json`, `AGENTS.md`, 그리고 자기 Task와 허용 파일을 Read
+List에 넣은 Task 계약을 만든다. 그 프로젝트를 cwd로 두고 현재 build의 절대경로로 다음을
+실행한다.
+
+```text
+node <BCOS 경로>/dist/cli.js task context T-001
+node <BCOS 경로>/dist/cli.js task start T-001 --actor-role worker --actor-id codex-cli
+node <BCOS 경로>/dist/cli.js task run T-001 --worker codex --dry-run
+node <BCOS 경로>/dist/cli.js task status T-001
+```
+
+`--dry-run`이므로 model process와 network 호출은 없다.
 
 ## 프로젝트 구조
 
@@ -333,15 +348,13 @@ reviewer·재작업 loop, 실행 관측, Model Adapter 경계, 검증 실패 피
 
 | | |
 |---|---|
-| **Model Adapter** | 토큰·비용 수집. 지금 `N/A`인 필드를 실제 값으로 |
-| **Multi-model Worker Switching** | 두 번째 worker. 이것이 있어야 "모델 전환"이 말이 된다 |
-| **Benchmark Harness** | 공정성 6문제 해결. arm 비교의 전제 |
-| **Benchmark Report** | 여기서 처음으로 나눗셈을 허용한다 |
+| **Role-based Task Templates** | 실제 역할 사례가 생긴 뒤 재사용 기본값 제공 |
+| **Worktree Parallelism** | 필요가 입증된 뒤 격리된 병렬 worker 지원 |
+| **Controlled Benchmark** | canonical case와 공통 evaluation gate를 먼저 정의 |
 
-T-012가 관측 가능성의 절반을 닫았고, T-014가 나머지 절반을 닫았다 —
-검증이 실패하면 그 이유가 다음 worker에게 자동으로 전달된다.
-
-`request-changes`를 비롯한 나머지 전이는 그 뒤에 채운다.
+T-014로 검증 실패가 다음 worker에게 전달되고, `request-changes`도 구현됐다. T-013은
+Model Adapter 경계를, T-016은 telemetry persistence와 measurement harness를 추가했다.
+Core는 외부 dogfood가 가능한 상태지만 새 프로젝트 부트스트랩은 수동이다.
 
 ## 기여하기
 

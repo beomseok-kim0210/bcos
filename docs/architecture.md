@@ -14,7 +14,7 @@ Human
   ▼
 manager  ─── Task 명세 ──▶ .bcos/tasks/<id>-<slug>.md
   │                              │
-  │                              │ bcos task show
+  │                              │ bcos task context
   │                              ▼
   │                           worker ◀── Context Package
   │                              │
@@ -75,8 +75,7 @@ bcos/
 │   ├── reviews/              # reviewer 소유
 │   ├── amendments/           # 동결된 Task 명세의 정정 — human 소유
 │   ├── runs/                 # workflow 실행 관찰 기록
-│   └── prompts/              # 부트스트랩 전용. CLI 완성 시 삭제
-├── docs/bootstrap/           # 부트스트랩 전용. CLI 완성 시 삭제
+│   └── benchmarks/           # 비교 측정 아티팩트 — benchmark 담당 소유
 ├── src/                      # 구현 (worker가 작성)
 └── tests/
 ```
@@ -93,7 +92,7 @@ bcos/
 
 | 파일 | Git 머지 |
 |---|---|
-| `tasks/`, `reports/`, `reviews/` | 텍스트. 충돌 시 수동 해결 |
+| `tasks/`, `reports/`, `reviews/`, `runs/`, `benchmarks/` | 소유자가 구분된 아티팩트. 충돌 시 수동 해결 |
 | `events.jsonl` | `merge=union`. 라인 단위라 안전 |
 | `state.json` | 충돌 시 폐기 후 재생성 |
 
@@ -116,15 +115,23 @@ bcos/
 
 ```
 src/
-├── cli.ts          # 명령 파싱 + 라우팅
+├── benchmark.ts    # 비교 측정 아티팩트 기록
+├── cli.ts          # 명령 파싱 + lifecycle 라우팅
+├── context.ts      # 결정론적 Context Package 조립
 ├── model.ts        # 모델 CLI 탐색·실행·관측 경계
-├── core/
-│   ├── task.ts     # Task 파싱·검증·상태 전이
-│   ├── state.ts    # state.json 읽기·쓰기·재생성
-│   └── events.ts   # events.jsonl append
-└── util/
-    ├── fsx.ts      # 원자적 파일 I/O
-    └── md.ts       # frontmatter 파싱
+├── reviewer.ts     # reviewer 입력·판정 처리
+├── run.ts          # workflow 실행 기록과 조회
+├── runner.ts       # worker 프로세스 실행
+└── workflow.ts     # host 검증·제출·review/rework orchestration
 ```
 
 **분리는 두 번째 사용처가 생길 때 한다.**
+
+Task lifecycle 상태(`TODO`부터 `DONE`까지)는 Task와 event가 소유한다. Run의
+`running`·`completed`·`failed`는 한 workflow 실행의 관찰 결과일 뿐이며 Task 상태를
+대체하거나 복구하지 않는다. 따라서 Task가 `IMPLEMENTED`이면서 마지막 Run이 `failed`인
+상태도 모순이 아니다.
+
+T-016 benchmark 기능은 세 arm의 비교 가능한 증거를 기록하는 measurement harness다.
+controlled trial 결과가 아니며, canonical case와 공통 evaluation gate가 정해지기 전에는
+우위를 주장하지 않는다.
