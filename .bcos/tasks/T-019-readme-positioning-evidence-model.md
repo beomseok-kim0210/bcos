@@ -2,10 +2,10 @@
 protocol: "0.1"
 id: T-019
 title: State what BCOS is for and what it records without claiming an answer
-status: TODO
-attempt: 0
+status: DONE
+attempt: 2
 created: 2026-08-15T05:00:00Z
-updated: 2026-08-15T05:00:00Z
+updated: 2026-08-19T09:05:18.883Z
 ---
 
 # T-019 — README Positioning and Evidence Model
